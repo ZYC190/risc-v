@@ -1,0 +1,23 @@
+[Unit]
+Description=K1 AMR Robot Core Service
+After=network.target
+
+[Service]
+Type=simple
+# 你的工作目录
+WorkingDirectory=/home/zyc/robot2
+# 执行你刚才写的启动脚本
+ExecStart=/bin/bash -c '/home/zyc/robot2/start_robot.sh'
+# 如果意外崩溃（比如节点死掉），5秒后自动重启，保证机器人永远在线！
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+# 👉 新增这三行！赋予它调用系统桌面的权限！
+Environment="DISPLAY=:0"
+Environment="WAYLAND_DISPLAY=wayland-0"
+Environment="XDG_RUNTIME_DIR=/run/user/1000"
+
+[Install]
+WantedBy=default.target

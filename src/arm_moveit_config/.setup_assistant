@@ -1,0 +1,10 @@
+moveit_setup_assistant_config:
+  urdf:
+    package: table_streeing_arm
+    relative_path: urdf/table_streeing_arm.urdf
+  srdf:
+    relative_path: config/table_streeing_arm.srdf
+  package_settings:
+    author_name: ""
+    author_email: ""
+    generated_timestamp: 1774859439
