@@ -71,13 +71,14 @@ class Ros2EngineThread(QThread):
     def voice_callback(self, msg):
         self.voice_log_signal.emit(msg.data)
 
-    def send_goal(self, target_x, target_y):
+    def send_goal(self, target_x, target_y, oz=0.0, ow=1.0):
         goal_msg = PoseStamped()
         goal_msg.header.stamp = self.node.get_clock().now().to_msg()
         goal_msg.header.frame_id = 'map'
         goal_msg.pose.position.x = float(target_x)
         goal_msg.pose.position.y = float(target_y)
-        goal_msg.pose.orientation.w = 1.0 
+        goal_msg.pose.orientation.z = float(oz)
+        goal_msg.pose.orientation.w = float(ow)
         self.goal_pub.publish(goal_msg)
 
     def send_esp32_cmd(self, cmd):
@@ -196,7 +197,7 @@ class NavPage(QWidget):
         """
         btn_a = QPushButton("⌖ 目标 A 点 : 充电补给站")
         btn_a.setStyleSheet(btn_style)
-        btn_a.clicked.connect(lambda: self.main_window.ros_thread.send_goal(1.0, 1.0))
+        btn_a.clicked.connect(lambda: self.main_window.ros_thread.send_goal(0.732491135597229, 0.020493270829319954, 0.01533924171145018, 0.9998823469107342))
         layout.addWidget(btn_a)
 
         btn_b = QPushButton("⌖ 目标 B 点 : 巡逻防御区")
@@ -363,24 +364,55 @@ class VoicePage(QWidget):
         self.log.document().setMaximumBlockCount(50) 
         layout.addWidget(self.log, stretch=1)
 
-        btn = QPushButton("🎤 [ 点击此处 : 开启/强制切断 听觉雷达 ]")
-        btn.setStyleSheet("""
+        # 麦克风状态按钮（初始为开启状态）
+        self.mic_on_style = """
             QPushButton { 
-                background-color: rgba(255, 0, 255, 0.05); 
-                border: 2px solid #FF00FF; 
+                background-color: rgba(0, 255, 128, 0.08); 
+                border: 2px solid #00FF80; 
                 border-radius: 8px;
-                color: #FF00FF; 
+                color: #00FF80; 
                 padding: 15px; 
                 font-size: 20px; 
                 font-weight: bold;
                 letter-spacing: 2px;
             } 
-            QPushButton:hover { background-color: #FF00FF; color: #000; }
-        """)
-        btn.clicked.connect(self.main_window.ros_thread.send_voice_trigger)
-        layout.addWidget(btn)
+            QPushButton:hover { background-color: #00FF80; color: #000; }
+        """
+        self.mic_off_style = """
+            QPushButton { 
+                background-color: rgba(255, 0, 60, 0.08); 
+                border: 2px solid #FF003C; 
+                border-radius: 8px;
+                color: #FF003C; 
+                padding: 15px; 
+                font-size: 20px; 
+                font-weight: bold;
+                letter-spacing: 2px;
+            } 
+            QPushButton:hover { background-color: #FF003C; color: #000; }
+        """
+        self.mic_btn = QPushButton("🟢 听觉雷达运行中 (点击关闭)")
+        self.mic_btn.setStyleSheet(self.mic_on_style)
+        self.mic_btn.clicked.connect(self.main_window.ros_thread.send_voice_trigger)
+        layout.addWidget(self.mic_btn)
+
+    def update_mic_button(self, state_on):
+        """根据麦克风状态更新按钮文字和样式"""
+        if state_on:
+            self.mic_btn.setText("🟢 听觉雷达运行中 (点击关闭)")
+            self.mic_btn.setStyleSheet(self.mic_on_style)
+        else:
+            self.mic_btn.setText("🔴 听觉雷达已切断 (点击开启)")
+            self.mic_btn.setStyleSheet(self.mic_off_style)
 
     def append_log(self, text):
+        # 解析状态消息，更新按钮
+        if text == "STATUS:ON":
+            self.update_mic_button(True)
+            return
+        if text == "STATUS:OFF":
+            self.update_mic_button(False)
+            return
         if text == "CLEAR_SCREEN":
             self.log.clear()
             self.log.append("> 神经交互网络已重置，小爱同学正在聆听...\n")

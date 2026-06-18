@@ -13,15 +13,15 @@ from aip import AipSpeech  # 引入百度官方智能云 SDK
 # ⚠️ 战车核心通信密钥配置（实战部署前必填！）⚠️
 # ==========================================
 # 1. DeepSeek 云端大脑密钥
-DEEPSEEK_API_KEY = "sk-a4d0a0fa3c304a85b4b8dd6a4eb1ae48"
+DEEPSEEK_API_KEY = "YOUR_DEEPSEEK_API_KEY"
 
 # 2. 百度智能云 语音密钥 (同时用于识别和合成)
-BAIDU_APP_ID = "121955325"  # <--- ⚠️ 这里必须填入你刚才申请的百度 APP ID
-BAIDU_API_KEY = "KfFHSRiT6DX0cXRyvCwRehEg"
-BAIDU_SECRET_KEY = "25HwPUFPTAZhqkxYDLCB8FBaFK8s8gzG"
+BAIDU_APP_ID = "YOUR_BAIDU_APP_ID"  # <--- ⚠️ 这里必须填入你刚才申请的百度 APP ID
+BAIDU_API_KEY = "YOUR_BAIDU_API_KEY"
+BAIDU_SECRET_KEY = "YOUR_BAIDU_SECRET_KEY"
 
 # 3. 高德地图气象雷达密钥
-GAODE_API_KEY = "75ea666272638e5ece2e33c115db66da"  
+GAODE_API_KEY = "YOUR_GAODE_API_KEY"  
 CITY_CODE = "500000"  
 # ==========================================
 
@@ -66,7 +66,7 @@ def baidu_tts(text):
         'lan': 'zh',
         'spd': 5,    # 语速
         'pit': 5,    # 音调
-        'vol': 5,    # 音量
+        'vol': 15,    # 音量
         'per': 4,    # 音色：4代表度丫丫童声
         'aue': 6     # 6代表WAV格式
     }
@@ -94,7 +94,7 @@ def play_audio(audio_file):
             audio = AudioSegment.from_file(audio_file, parameters=["-loglevel", "quiet"])
             
             # 2. 增加 10dB 音量
-            louder_audio = audio + 10  
+            louder_audio = audio + 15 
             
             # 3. 🔥 核心黑科技：强制重采样到 48000Hz，满足主板声卡的强迫症！
             fixed_audio = louder_audio.set_frame_rate(48000)

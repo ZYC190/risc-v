@@ -62,7 +62,7 @@ bt_navigator:
   ros__parameters:
     use_sim_time: False
     transform_tolerance: 0.1 #变换容差
-    goal_reached_tol: 0.25 #接受姿势作为目标的容忍度(m)
+    goal_reached_tol: 0.08 #接受姿势作为目标的容忍度(m)
     global_frame: map
     robot_base_frame: base_footprint
     odom_topic: /odom_combined
@@ -110,8 +110,8 @@ controller_server:
     general_goal_checker: #目标检查器
       stateful: True
       plugin: "nav2_controller::SimpleGoalChecker"
-      xy_goal_tolerance: 0.25  #xy 目标容差
-      yaw_goal_tolerance: 0.25 #yaw目标容差
+      xy_goal_tolerance: 0.08  #xy 目标容差
+      yaw_goal_tolerance: 0.08 #yaw目标容差
     # DWB parameters
     FollowPath: 
       plugin: "nav2_rotation_shim_controller::RotationShimController" #旋转控制器
@@ -119,11 +119,11 @@ controller_server:
       debug_trajectory_details: True #发布调试信息
       min_vel_x: 0.0      #最小速度X（米/秒）
       min_vel_y: 0.0       #最小速度y（米/秒）
-      max_vel_x: 0.4       #最大速度X（米/秒）
-      max_vel_y: 0.0       #最小速度y（米/秒）
-      max_vel_theta: 1.0   #最大角速度（rad/s）
-      min_speed_xy: 0.0    #最小平移速度（米/秒）
-      max_speed_xy: 0.25    #最大平移速度（米/秒）
+       max_vel_x: 0.4       #最大速度X（米/秒）
+       max_vel_y: 0.0       #最小速度y（米/秒）
+       max_vel_theta: 1.0   #最大角速度（rad/s）
+       min_speed_xy: 0.0    #最小平移速度（米/秒）
+       max_speed_xy: 0.25    #最大平移速度（米/秒）
       min_speed_theta: -0.25 #最小角速度（rad/s）
       # Add high threshold velocity for turtlebot 3 issue.
       # https://github.com/ROBOTIS-GIT/turtlebot3_simulations/issues/75
@@ -139,7 +139,7 @@ controller_server:
       sim_time: 1.7        #LimitedAccelGenerator插件参数:提前模拟时间
       angular_granularity: 0.025 #StandardTrajectoryGenerator插件参数:Angular distance to project
       transform_tolerance: 0.2 #TF变换容差(S)
-      xy_goal_tolerance: 0.25 #轨迹评论参数:满足目标完成标准的容忍度（m）
+      xy_goal_tolerance: 0.08 #轨迹评论参数:满足目标完成标准的容忍度（m）
       trans_stopped_velocity: 0.25 #以下速度被认为在满足公差时停止（rad/s）
       short_circuit_trajectory_evaluation: True #找到最佳分数后，停止评估分数
       stateful: True

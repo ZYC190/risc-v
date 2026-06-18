@@ -1,0 +1,157 @@
+[
+    {
+        "instruction": "跟随",
+        "input": "",
+        "output": {
+            "function": "follow_me"
+        }
+    },
+    {
+        "instruction": "停止跟随",
+        "input": "",
+        "output": {
+            "function": "stop_follow_me"
+        }
+    },
+    {
+        "instruction": "向前走两步",
+        "input": "",
+        "output": {
+            "function": "take_two_steps_forward"
+        }
+    },
+    {
+        "instruction": "向后走两步",
+        "input": "",
+        "output": {
+            "function": "take_two_steps_backward"
+        }
+    },
+    {
+        "instruction": "原地旋转",
+        "input": "",
+        "output": {
+            "function": "rotate_in_place"
+        }
+    },
+    {
+        "instruction": "向前走",
+        "input": "",
+        "output": {
+            "function": "go_forward"
+        }
+    },
+    {
+        "instruction": "向后走",
+        "input": "",
+        "output": {
+            "function": "go_backward"
+        }
+    },
+    {
+        "instruction": "向左转",
+        "input": "",
+        "output": {
+            "function": "turn_left"
+        }
+    },
+    {
+        "instruction": "原地左转圈",
+        "input": "",
+        "output": {
+            "function": "turn_left_circle"
+        }
+    },
+    {
+        "instruction": "向右转",
+        "input": "",
+        "output": {
+            "function": "turn_right"
+        }
+    },
+    {
+        "instruction": "原地右转圈",
+        "input": "",
+        "output": {
+            "function": "turn_right_circle"
+        }
+    },
+    {
+        "instruction": "站起来",
+        "input": "",
+        "output": {
+            "function": "stand_up"
+        }
+    },
+    {
+        "instruction": "前趴下",
+        "input": "",
+        "output": {
+            "function": "lie_down"
+        }
+    },
+    {
+        "instruction": "后趴下",
+        "input": "",
+        "output": {
+            "function": "roll_over"
+        }
+    },
+    {
+        "instruction": "扭屁股",
+        "input": "",
+        "output": {
+            "function": "wiggle_hips"
+        }
+    },
+    {
+        "instruction": "左转头",
+        "input": "",
+        "output": {
+            "function": "turn_head_left"
+        }
+    },
+    {
+        "instruction": "右转头",
+        "input": "",
+        "output": {
+            "function": "turn_head_right"
+        }
+    },
+    {
+        "instruction": "摇尾巴",
+        "input": "",
+        "output": {
+            "function": "wag_tail"
+        }
+    },
+    {
+        "instruction": "太空漫步",
+        "input": "",
+        "output": {
+            "function": "moonwalk"
+        }
+    },
+    {
+        "instruction": "匍匐前进",
+        "input": "",
+        "output": {
+            "function": "army_crawl"
+        }
+    },
+    {
+        "instruction": "翻一个",
+        "input": "",
+        "output": {
+            "function": "do_flip"
+        }
+    },
+    {
+        "instruction": "秀一个",
+        "input": "",
+        "output": {
+            "function": "show_dance"
+        }
+    }
+
+]

@@ -1,0 +1,381 @@
+amcl:
+  ros__parameters:
+    use_sim_time: False
+    alpha1: 0.9   #里程计的旋转估计中来自旋转的预期过程噪声
+    alpha2: 0.1   #里程计的旋转估计中来自平移的预期过程噪声
+    alpha3: 0.05  #里程计的翻译估计中来自translation的预期过程噪声
+    alpha4: 0.01  #里程计的平移估计中因旋转而产生的预期过程噪声
+    alpha5: 0.04  #仅适用于 Omni 型号：translation噪音
+    base_frame_id: "base_footprint" #机器人底座框架 
+    beam_skip_distance: 0.5         #忽略似然场模型中大多数粒子不同意的光束。考虑跳过的最大距离（米）
+    beam_skip_error_threshold: 0.9  #由于收敛性不好，未匹配地图后强制进行完全更新的光束百分比
+    beam_skip_threshold: 0.3        #需要跳过的光束的百分比。
+    do_beamskip: false              #是否在似然场模型中进行波束跳跃
+    global_frame_id: "map"          #定位系统发布的坐标框架的名称
+    lambda_short: 0.1               #模型 z_short 部分的指数衰减参数
+    laser_likelihood_max_dist: 2.0  #在地图上进行障碍物膨胀的最大距离，用于似然场模型
+    laser_max_range: 100.0          #要考虑的最大扫描范围，-1.0 将导致使用激光报告的最大范围
+    laser_min_range: -1.0           #要考虑的最小扫描范围，-1.0 将导致使用激光报告的最小范围
+    laser_model_type: "likelihood_field" #使用哪种模型，
+    #beam、likelihood_field 或 unlikely_field_prob。与 unlikely_field 相同，但如果启用，则包含 beamskip 功能
+    max_beams: 60                   #更新过滤器时每次扫描要使用多少个均匀分布的光束。
+    max_particles: 2000             #允许的最大粒子数
+    min_particles: 500              #允许的最小粒子数
+    odom_frame_id: "odom"  #使用哪个框架进行里程计
+    pf_err: 0.02                    #粒子过滤器群体误差
+    pf_z: 0.85                      #粒子过滤器群体密度
+    recovery_alpha_fast: 0.0        #快速平均权重过滤器的指数衰减率，用于决定何时通过添加随机姿势进行恢复。
+    recovery_alpha_slow: 0.0        #慢速平均权重过滤器的指数衰减率，用于决定何时通过添加随机姿势进行恢复。
+    resample_interval: 2            #重采样之前所需的过滤器更新次数
+    robot_model_type: "nav2_amcl::OmniMotionModel" #插件类的完全限定类型。
+    #选项为“nav2_amcl::DifferentialMotionModel”和“nav2_amcl::OmniMotionModel”。
+
+    save_pose_rate: 0.5             #将最后估计的姿势和协方差存储到参数服务器的最大速率（Hz）
+    sigma_hit: 0.02                 #模型的 z_hit 部分中使用的高斯模型的标准差
+    tf_broadcast: true              #将其设置为 false 以防止 amcl 发布全局框架和里程计框架之间的变换
+    transform_tolerance: 0.3        #发布转换的容差
+    update_min_a: 0.06              #执行过滤器更新之前需要进行旋转运动。
+    update_min_d: 0.025             #执行过滤器更新之前需要进行平移运动
+    z_hit: 0.7                      #模型的 z_hit 部分的混合权重，所有使用的 z 权重之和必须为 1。
+    z_max: 0.001                    #模型的 z_max 部分的混合权重，所有使用的 z 权重之和必须为 1。
+    z_rand: 0.059                   #模型的 z_rand 部分的混合权重，所有使用的 z 权重之和必须为 1。
+    z_short: 0.24                   #模型中 z_short 部分的混合权重，所有使用的 z 权重之和必须为 1。
+    scan_topic: scan                #要订阅的激光雷达
+
+    # Initial Pose
+    set_initial_pose: True #AMCL 从 initial_pose* 参数设置初始姿势，而不是等待 initial_pose 消息
+    initial_pose.x: 0.0
+    initial_pose.y: 0.0
+    initial_pose.z: 0.0
+    initial_pose.yaw: 0.0
+    #Amcl参数解释参考：https://docs.nav2.org/configuration/packages/configuring-amcl.html
+
+amcl_map_client:
+  ros__parameters:
+    use_sim_time: False
+
+amcl_rclcpp_node:
+  ros__parameters:
+    use_sim_time: False
+
+bt_navigator:
+  ros__parameters:
+    use_sim_time: False
+    transform_tolerance: 0.1 #变换容差
+    goal_reached_tol: 0.25 #接受姿势作为目标的容忍度(m)
+    global_frame: map
+    robot_base_frame: base_footprint
+    odom_topic: /odom
+    bt_loop_duration: 10        #BT 执行每次迭代的持续时间（以毫秒为单位
+    default_server_timeout: 20  #BT 操作节点等待操作服务器确认时的默认超时值（以毫秒为单位）
+    # 'default_nav_through_poses_bt_xml' and 'default_nav_to_pose_bt_xml' are use defaults:
+    # nav2_bt_navigator/navigate_to_pose_w_replanning_and_recovery.xml
+    # nav2_bt_navigator/navigate_through_poses_w_replanning_and_recovery.xml
+    # They can be set here or via a RewrittenYaml remap from a parent launch file to Nav2.
+    plugin_lib_names: #行为树节点共享库列表，Humble后的版本默认包含所有NAV2 BT库，这里可以加入自定义BT节点
+    - nav2_compute_path_to_pose_action_bt_node
+    - nav2_compute_path_through_poses_action_bt_node
+    - nav2_smooth_path_action_bt_node
+    - nav2_follow_path_action_bt_node
+    - nav2_spin_action_bt_node
+    - nav2_wait_action_bt_node
+    - nav2_back_up_action_bt_node
+    - nav2_drive_on_heading_bt_node
+    - nav2_clear_costmap_service_bt_node
+    - nav2_is_stuck_condition_bt_node
+    - nav2_goal_reached_condition_bt_node
+    - nav2_goal_updated_condition_bt_node
+    - nav2_globally_updated_goal_condition_bt_node
+    - nav2_is_path_valid_condition_bt_node
+    - nav2_initial_pose_received_condition_bt_node
+    - nav2_reinitialize_global_localization_service_bt_node
+    - nav2_rate_controller_bt_node
+    - nav2_distance_controller_bt_node
+    - nav2_speed_controller_bt_node
+    - nav2_truncate_path_action_bt_node
+    - nav2_truncate_path_local_action_bt_node
+    - nav2_goal_updater_node_bt_node
+    - nav2_recovery_node_bt_node
+    - nav2_pipeline_sequence_bt_node
+    - nav2_round_robin_node_bt_node
+    - nav2_transform_available_condition_bt_node
+    - nav2_time_expired_condition_bt_node
+    - nav2_path_expiring_timer_condition
+    - nav2_distance_traveled_condition_bt_node
+    - nav2_single_trigger_bt_node
+    - nav2_is_battery_low_condition_bt_node
+    - nav2_navigate_through_poses_action_bt_node
+    - nav2_navigate_to_pose_action_bt_node
+    - nav2_remove_passed_goals_action_bt_node
+    - nav2_planner_selector_bt_node
+    - nav2_controller_selector_bt_node
+    - nav2_goal_checker_selector_bt_node
+    - nav2_controller_cancel_bt_node
+    - nav2_path_longer_on_approach_bt_node
+    - nav2_wait_cancel_bt_node
+    - nav2_spin_cancel_bt_node
+    - nav2_back_up_cancel_bt_node
+    - nav2_drive_on_heading_cancel_bt_node
+    error_code_names:
+    - compute_path_error_code 
+    - follow_path_error_code
+
+# bt_navigator参数说明：https://docs.nav2.org/configuration/packages/configuring-bt-navigator.html?highlight=bt_navigator
+
+bt_navigator_rclcpp_node:
+  ros__parameters:
+    use_sim_time: False
+
+controller_server:
+  ros__parameters:
+    use_sim_time: False
+    controller_frequency: 10.0           #运行控制器的频率
+    min_x_velocity_threshold: 0.001      #最小 x 速度阈值
+    min_y_velocity_threshold: 0.001        #最小 y 速度阈值
+    min_theta_velocity_threshold: 0.001  #最小速度阈值
+    odom_topic: /odom
+    failure_tolerance: 0.3 #故障容忍度：被调用的控制器插件可以失败的最大持续时间(S)，设置为0表示禁用
+    progress_checker_plugin: "progress_checker" #进度检查器，用于检查机器人进度的进度检查器插件的映射名称
+    goal_checker_plugins: ["general_goal_checker"] # "precise_goal_checker" #目标检查器
+    controller_plugins: ["FollowPath"]    #控制器插件
+
+    # Progress checker parameters
+    progress_checker: #进度检查器
+      plugin: "nav2_controller::SimpleProgressChecker"
+      required_movement_radius: 0.5 #所需运动半径
+      movement_time_allowance: 30.0 #移动时间容差
+    # Goal checker parameters
+    #precise_goal_checker:
+    #  plugin: "nav2_controller::SimpleGoalChecker"
+    #  xy_goal_tolerance: 0.25
+    #  yaw_goal_tolerance: 0.25
+    #  stateful: True
+    general_goal_checker: #目标检查器
+      stateful: True
+      plugin: "nav2_controller::SimpleGoalChecker"
+      xy_goal_tolerance: 0.5  #xy 目标容差
+      yaw_goal_tolerance: 0.5 #yaw目标容差
+
+    # RPP parameters
+    FollowPath:
+      plugin: "nav2_rotation_shim_controller::RotationShimController" #旋转控制器
+      primary_controller: "nav2_regulated_pure_pursuit_controller::RegulatedPurePursuitController"
+      desired_linear_vel: 0.2
+      max_linear_accel: 5.0
+      max_linear_decel: 5.0
+      lookahead_dist: 0.4
+      min_lookahead_dist: 0.3
+      max_lookahead_dist: 0.9
+      lookahead_time: 2.0
+      rotate_to_heading_angular_vel: 2.0
+      transform_tolerance: 0.2
+      use_velocity_scaled_lookahead_dist: false
+      min_approach_linear_velocity: 0.05
+      use_approach_linear_velocity_scaling: true
+      max_allowed_time_to_collision: 1.0
+      use_regulated_linear_velocity_scaling: true
+      use_cost_regulated_linear_velocity_scaling: false
+      regulated_linear_scaling_min_radius: 0.9
+      regulated_linear_scaling_min_speed: 0.25
+      use_rotate_to_heading: false
+      allow_reversing: true
+      rotate_to_heading_min_angle: 1.5
+      max_angular_accel: 1.8
+
+
+controller_server_rclcpp_node:
+  ros__parameters:
+    use_sim_time: False
+
+local_costmap:
+  local_costmap:
+    ros__parameters:
+      # update_frequency: 5.0  #成本地图更新频率
+      # publish_frequency: 3.0 #将成本图发布到话题的频率
+      update_frequency: 7.0  #降低负载
+      publish_frequency: 5.0 
+      global_frame: map      #全局框架
+      robot_base_frame: base_footprint #机器人底座框架
+      use_sim_time: False  #仿真时间
+      rolling_window: true #成本地图是否应随机器人基座框架滚动
+      width: 4             #代价地图的宽度（m）
+      height: 4          #代价地图的高度（m）
+      # resolution: 0.05     #代价地图1像素的分辨率，以米为单位
+      resolution: 0.05     
+      # robot_radius: 0.20   #机器人半径，如果未提供足迹坐标，则使用机器人半径。
+      # footprint: "[ [-0.1350, -0.1110], [-0.1350, 0.1110], [0.1350, 0.1110], [0.1350, -0.1110] ]"
+      footprint: "[ [-0.1750, -0.1300], [-0.1750, 0.1300], [0.1750, 0.1300], [0.1750, -0.1300] ]"
+      plugins: ["obstacle_layer","inflation_layer"] # 降低负载
+      # plugins: ["voxel_layer","inflation_layer"] #插件包括:{“体素层”，“膨胀层”}
+      inflation_layer:                             #膨胀层参数
+        plugin: "nav2_costmap_2d::InflationLayer"  #膨胀层插件。
+        cost_scaling_factor: 2.0                   #成本缩放因子，决定障碍物成本随距离的递减速度。
+        inflation_radius: 0.4                    #膨胀半径
+      voxel_layer:
+        plugin: "nav2_costmap_2d::VoxelLayer"      #体素层插件。
+        enabled: True
+        publish_voxel_map: True
+        origin_z: 0.0                              #体素地图的起始Z坐标
+        z_resolution: 0.05                         #体素地图的Z轴分辨率
+        z_voxels: 16                               #体素地图的Z轴体素数量
+        max_obstacle_height: 2.0                   #可检测障碍物的最大高度（米）
+        mark_threshold: 0                          #标记体素的阈值
+        # observation_sources: scan scan2                  #观测源
+        observation_sources: scan
+        scan:
+          topic: /scan
+          max_obstacle_height: 2.0                  #可检测障碍物的最大高度（米）
+          clearing: True                            #是否启用障碍物清除功能
+          marking: True                             #是否启用障碍物标记功能
+          data_type: "LaserScan"                    #数据类型
+          raytrace_max_range: 3.0                  #控制光线追踪从代价地图中清除障碍物的最大范围 
+          raytrace_min_range: 0.0                  #控制光线追踪从代价地图中清除障碍物的最大范围 
+          obstacle_max_range: 2.5                   #控制代价地图上标记障碍物的最大范围
+          obstacle_min_range: 0.0                   #控制代价地图上标记障碍物的最小范围      
+        scan2:
+          topic: /outscan
+          max_obstacle_height: 2.0                  #可检测障碍物的最大高度（米）
+          clearing: True                            #是否启用障碍物清除功能
+          marking: True                             #是否启用障碍物标记功能
+          data_type: "LaserScan"                  #数据类型
+
+      obstacle_layer:  #障碍层参数
+        plugin: "nav2_costmap_2d::ObstacleLayer" #障碍层插件
+        enabled: True
+        observation_sources: scan                #观测源
+        scan:
+          topic: /scan
+          max_obstacle_height: 5.0                 #可检测障碍物的最大高度（米）
+          clearing: True                           #是否启用障碍物清除功能
+          marking: True                            #是否启用障碍物标记功能
+          data_type: "LaserScan"                   #数据类型
+          raytrace_max_range: 3.0                 #控制光线追踪从代价地图中清除障碍物的最大范围 
+          raytrace_min_range: 0.0                  #控制光线追踪从代价地图中清除障碍物的最大范围 
+          obstacle_max_range: 2.5                  #控制代价地图上标记障碍物的最大范围
+          obstacle_min_range: 0.0                  #控制代价地图上标记障碍物的最小范围
+        scan2:
+          topic: /outscan
+          max_obstacle_height: 2.0                  #可检测障碍物的最大高度（米）
+          clearing: True                            #是否启用障碍物清除功能
+          marking: True                             #是否启用障碍物标记功能
+          data_type: "LaserScan"                  #数据类型
+      always_send_full_costmap: True                 #是否每次更新时都发送完整的成本图，而不是更新
+  local_costmap_client:
+    ros__parameters:
+      use_sim_time: False
+  local_costmap_rclcpp_node:
+    ros__parameters:
+      use_sim_time: False
+
+global_costmap:
+  global_costmap:
+    ros__parameters:
+      update_frequency: 5.0             #成本地图更新频率
+      publish_frequency: 3.0            #将成本图发布到话题的频率
+      global_frame: map                 #全局框架
+      robot_base_frame: base_footprint  #机器人底座框架
+      use_sim_time: False               #仿真时间 
+      # robot_radius: 0.20                #机器人半径
+      # footprint: "[ [-0.1350, -0.1110], [-0.1350, 0.1110], [0.1350, 0.1110], [0.1350, -0.1110] ]"
+      footprint: "[ [-0.1750, -0.1300], [-0.1750, 0.1300], [0.1750, 0.1300], [0.1750, -0.1300] ]"
+      # resolution: 0.05                  #全局地图1像素的分辨率，以米为单位
+      resolution: 0.05                 
+      track_unknown_space: true
+      # rolling_window: True
+      # width: 8                        #全局地图的宽度（m）
+      # height: 8                     #全局地图的高度（m）
+      plugins: ["static_layer", "obstacle_layer", "inflation_layer"] #插件包括：{“静态层”，“障碍层”，“膨胀层”}
+      # plugins: ["inflation_layer","obstacle_layer"]
+      obstacle_layer:  #障碍层参数
+        plugin: "nav2_costmap_2d::ObstacleLayer" #障碍层插件
+        enabled: True
+        observation_sources: scan                  #观测源
+        scan:
+          topic: /scan
+          max_obstacle_height: 2.0                 #可检测障碍物的最大高度（米）
+          clearing: True                           #是否启用障碍物清除功能
+          marking: True                            #是否启用障碍物标记功能
+          data_type: "LaserScan"                   #数据类型
+          raytrace_max_range: 10.0                 #控制光线追踪从代价地图中清除障碍物的最大范围 
+          raytrace_min_range: 0.0                  #控制光线追踪从代价地图中清除障碍物的最大范围 
+          obstacle_max_range: 2.5                  #控制代价地图上标记障碍物的最大范围
+          obstacle_min_range: 0.0                  #控制代价地图上标记障碍物的最小范围
+      static_layer: #静态层参数
+        plugin: "nav2_costmap_2d::StaticLayer"     #静态层插件
+        map_subscribe_transient_local: True
+      inflation_layer: #膨胀层参数
+        plugin: "nav2_costmap_2d::InflationLayer"  #膨胀层插件
+        cost_scaling_factor: 3.0                   #成本缩放因子，决定障碍物成本随距离的递减速度。
+        # inflation_radius: 0.25 
+        inflation_radius: 0.4                   #膨胀半径
+      always_send_full_costmap: True               #是否每次更新时都发送完整的成本图，而不是更新
+  global_costmap_client:
+    ros__parameters:
+      use_sim_time: False
+  global_costmap_rclcpp_node:
+    ros__parameters:
+      use_sim_time: False
+
+planner_server: #规划器服务器参数
+  ros__parameters:
+    expected_planner_frequency: 10.0     #预期的规划器频率。如果当前频率小于预期频率，则显示警告消息。
+    use_sim_time: False
+    planner_plugins: ["GridBased"] #规划器插件类型，需要与BT Tree文件匹配
+    GridBased:
+      plugin: "nav2_navfn_planner/NavfnPlanner"
+      tolerance: 0.5
+      use_astar: true
+      allow_unknown: true
+
+planner_server_rclcpp_node:
+  ros__parameters:
+    use_sim_time: False
+
+smoother_server:
+  ros__parameters:
+    use_sim_time: True
+    smoother_plugins: ["simple_smoother"]
+    simple_smoother:
+      plugin: "nav2_smoother::SimpleSmoother"
+      tolerance: 0.1  #TF transform tolerance.
+      max_its: 1000
+      do_refinement: True
+
+behavior_server:
+  ros__parameters:
+    costmap_topic: local_costmap/costmap_raw           #用于在局部代价地图上进行碰撞检查的原始代价地图主题。
+    footprint_topic: local_costmap/published_footprint #局部代价地图框架中的足迹主题。
+    cycle_frequency: 10.0 #运行行为插件的频率。
+    behavior_plugins: ["spin", "backup", "drive_on_heading", "wait"] #插件包括：{“旋转”、“后退”、“前进”、“等待”}
+    spin:
+      plugin: "nav2_behaviors/Spin"
+    backup:
+      plugin: "nav2_behaviors/BackUp"
+    drive_on_heading:
+      plugin: "nav2_behaviors/DriveOnHeading"
+    wait:
+      plugin: "nav2_behaviors/Wait"
+    global_frame: map
+    robot_base_frame: base_footprint
+    transform_tolerance: 0.1 #TF 变换容差
+    use_sim_time: False
+    simulate_ahead_time: 2.0 #提前模拟
+    max_rotational_vel: 0.3  #最大旋转速度（弧度/秒）
+    min_rotational_vel: 0.05 #最小旋转速度（弧度/秒）
+    rotational_acc_lim: 0.3  #最大旋转加速度（rad/s^2）
+
+robot_state_publisher:
+  ros__parameters:
+    use_sim_time: False
+
+waypoint_follower:
+  ros__parameters:
+    loop_rate: 20 #循环速率
+    stop_on_failure: false #如果单个航点失败，是否使操作任务失败。如果为 false，将继续到下一个航点。
+    waypoint_task_executor_plugin: "wait_at_waypoint"
+    wait_at_waypoint:
+      plugin: "nav2_waypoint_follower::WaitAtWaypoint"
+      enabled: True
+      waypoint_pause_duration: 100 #机器人到达每个航点后休眠/等待的时间（以毫秒为单位）
+#waypoint_follower 参数参考
+#https://docs.nav2.org/configuration/packages/configuring-waypoint-follower.html?highlight=stop_on_failure

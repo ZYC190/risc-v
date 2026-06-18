@@ -117,11 +117,11 @@ controller_server:
     FollowPath: 
       plugin: "nav2_rotation_shim_controller::RotationShimController" #旋转控制器
       primary_controller: "nav2_mppi_controller::MPPIController" #MPPI控制器
-      angular_dist_threshold: 0.785
-      forward_sampling_distance: 0.5
-      rotate_to_heading_angular_vel: 1.8
-      max_angular_accel: 3.2
-      simulate_ahead_time: 1.0
+       angular_dist_threshold: 0.785
+       forward_sampling_distance: 0.5
+       rotate_to_heading_angular_vel: 1.0
+       max_angular_accel: 1.5
+       simulate_ahead_time: 1.0
       rotate_to_goal_heading: True
     
       time_steps: 56    #候选轨迹中的时间步长（点）数
@@ -130,10 +130,10 @@ controller_server:
       vx_std: 0.2       #Vx 的抽样标准差
       vy_std: 0.2       #Vy 的抽样标准差
       wz_std: 0.4       #Wz（角速度）的抽样标准差
-      vx_max: 0.5       #目标最大前进速度（米/秒）
-      vx_min: -0.5      #目标最大反向速度（米/秒）
-      vy_max: 0.5       #如果使用Omni运动模型，目标最大横向速度（m/s）
-      wz_max: 2.0       #最大旋转速度（弧度/秒）
+       vx_max: 0.2       #目标最大前进速度（米/秒）
+       vx_min: -0.2      #目标最大反向速度（米/秒）
+       vy_max: 0.2       #如果使用Omni运动模型，目标最大横向速度（m/s）
+       wz_max: 1.0       #最大旋转速度（弧度/秒）
       ax_max: 1.5
       ax_min: -1.5
       ay_max: 0.0
@@ -172,14 +172,14 @@ controller_server:
       ObstaclesCritic:
         enabled: true
         cost_power: 1
-        repulsion_weight: 1.5 #权重参数，通常优先选择成本较低的空间中的路线。
+        repulsion_weight: 0.8 #权重参数，通常优先选择成本较低的空间中的路线。（降低排斥力，让小车离障碍物更近）
         critical_weight: 30.0 #应用于临界碰撞的权重，用于collision_margin_distance防止近距离碰撞
         consider_footprint: false #是否使用点成本（如果机器人是圆形的或者计算能力低）或计算 SE2 足迹成本
         collision_cost: 10000.0 #应用于轨迹中真实碰撞的成本。
-        collision_margin_distance: 0.1 #碰撞边缘距离，应该设置在0.05-0.2之间，请确保将此参数设置为预计机器人需要穿越的最窄空间
-        near_goal_distance: 0.4 #靠近目标的距离（米）停止应用优先障碍物项，以允许机器人平稳地收敛到靠近障碍物的目标姿势，0.5 --> 0.6 -->0.3(Tues) 
-        cost_scaling_factor: 5.0
-        inflation_radius: 0.15  #膨胀半径，仅限Humble
+        collision_margin_distance: 0.04 #碰撞边缘距离，缩小以允许更贴近障碍物（原0.1，建议0.03-0.05）
+        near_goal_distance: 0.4 #靠近目标的距离（米）停止应用优先障碍物项，以允许机器人平稳地收敛到靠近障碍物的目标姿势
+        cost_scaling_factor: 10.0 #增大成本缩放因子，让障碍物成本衰减更快（原5.0）
+        inflation_radius: 0.05  #膨胀半径，仅限Humble
 
       PreferForwardCritic: #激励机器人前进，而不是后退
         enabled: true
@@ -238,7 +238,7 @@ local_costmap:
       inflation_layer:                             #膨胀层参数
         plugin: "nav2_costmap_2d::InflationLayer"  #膨胀层插件。
         cost_scaling_factor: 3.0                   #成本缩放因子，决定障碍物成本随距离的递减速度。
-        inflation_radius: 0.15                     #膨胀半径
+        inflation_radius: 0.05                     #膨胀半径
       voxel_layer:
         plugin: "nav2_costmap_2d::VoxelLayer"      #体素层插件。
         enabled: True
@@ -321,7 +321,7 @@ global_costmap:
       inflation_layer: #膨胀层参数
         plugin: "nav2_costmap_2d::InflationLayer"  #膨胀层插件
         cost_scaling_factor: 10.0                   #成本缩放因子，决定障碍物成本随距离的递减速度。
-        inflation_radius: 0.2                     #膨胀半径
+        inflation_radius: 0.05                     #膨胀半径
       always_send_full_costmap: True               #是否每次更新时都发送完整的成本图，而不是更新
   global_costmap_client:
     ros__parameters:
