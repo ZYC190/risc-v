@@ -99,7 +99,7 @@ controller_server:
     # Progress checker parameters
     progress_checker: #进度检查器
       plugin: "nav2_controller::SimpleProgressChecker"
-      required_movement_radius: 0.5 #所需运动半径
+      required_movement_radius: 0.02 #所需运动半径
       movement_time_allowance: 10.0 #移动时间容差
     # Goal checker parameters
     #precise_goal_checker:
@@ -140,7 +140,7 @@ controller_server:
       angular_granularity: 0.025 #StandardTrajectoryGenerator插件参数:Angular distance to project
       transform_tolerance: 0.2 #TF变换容差(S)
       xy_goal_tolerance: 0.08 #轨迹评论参数:满足目标完成标准的容忍度（m）
-      trans_stopped_velocity: 0.25 #以下速度被认为在满足公差时停止（rad/s）
+      trans_stopped_velocity: 0.05 #以下速度被认为在满足公差时停止（m/s）
       short_circuit_trajectory_evaluation: True #找到最佳分数后，停止评估分数
       stateful: True
       critics: ["RotateToGoal", "Oscillation", "BaseObstacle", "GoalAlign", "PathAlign", "PathDist", "GoalDist"] #要使用的评论插件列表

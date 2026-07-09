@@ -7,7 +7,9 @@ import serial
 import struct
 import math
 import time
+import threading
 from geometry_msgs.msg import PointStamped
+from std_msgs.msg import String
 
 class ArmGrabberNode(Node):
     def __init__(self):
@@ -18,6 +20,10 @@ class ArmGrabberNode(Node):
         # ==========================================
         self.port_name = '/dev/wheeltec_arm' 
         self.baud_rate = 115200
+        self.serial_lock = threading.Lock()
+        self.abort_event = threading.Event()
+        self.is_busy = False             # 正在执行动作，防止重复触发
+        self.last_pose = [0.0, 1.0, -1.57, -1.57, 0.0, 0.0]
         try:
             self.serial_port = serial.Serial(self.port_name, self.baud_rate, timeout=0.5)
             self.get_logger().info(f"🔥 成功连接 STM32 串口: {self.port_name}")
@@ -40,6 +46,12 @@ class ArmGrabberNode(Node):
             '/target_point',    
             self.target_callback,
             10)
+        self.cmd_sub = self.create_subscription(
+            String,
+            '/arm_cmd',
+            self.arm_cmd_callback,
+            10)
+        self.status_pub = self.create_publisher(String, '/arm_status', 10)
 
         # ==========================================
         # 2. ⚡ 指挥官精测物理尺寸参数 (轴心到轴心)
@@ -57,9 +69,9 @@ class ArmGrabberNode(Node):
         self.camera_offset_z = 0.30   # 相机距离底座垂直高度: 30cm
 
         # 🔍 毫米级极细偏置修正
-        self.x_offset = -0.020   
-        self.y_offset = 0.010      
-        self.z_offset = -0.025   # 高度 1.5cm 降落修正
+        self.x_offset =  -0.07   
+        self.y_offset = -0.03     
+        self.z_offset = 0.05   # 高度 1.5cm 降落修正
 
         self.get_logger().info(f"🤖 动力学平稳时间轴网络已建立！稳定压倒一切。")
 
@@ -71,10 +83,78 @@ class ArmGrabberNode(Node):
         self.collected_y = []            # 累积 y 坐标
         self.collected_z = []            # 累积 z 坐标
         self.has_executed = False        # 抓取完成标志位
+        self.grab_enabled = False        # 触摸屏/手机确认后才抓取
+        self.right_turn_rad = 0.75       # 抓取后底座向右转角度，方向反了就改成 -0.75
+
+        self.publish_status("机械臂视觉抓取节点已启动：等待 /arm_cmd 的 GRAB_BOTTLE 指令。")
+
+    def publish_status(self, text):
+        self.get_logger().info(text)
+        if hasattr(self, "status_pub"):
+            msg = String()
+            msg.data = text
+            self.status_pub.publish(msg)
+
+    def arm_cmd_callback(self, msg):
+        cmd = msg.data.strip().upper()
+        if cmd in ("GRAB_BOTTLE", "GRAB"):
+            if self.is_busy:
+                self.publish_status("机械臂正在执行抓取流程，请等待完成；重复抓取指令已忽略。")
+                return
+            self.abort_event.clear()
+            self.has_executed = False
+            self.grab_enabled = True
+            self.collected_x.clear()
+            self.collected_y.clear()
+            self.collected_z.clear()
+            self.publish_status("收到抓取指令：开始收集双目目标坐标。")
+        elif cmd == "SCAN":
+            self.has_executed = False
+            self.grab_enabled = False
+            self.collected_x.clear()
+            self.collected_y.clear()
+            self.collected_z.clear()
+            self.publish_status("收到扫描指令：请确认 YOLO 节点正在输出目标画面，然后点击“抓取水瓶”。")
+        elif cmd == "RESET":
+            self.abort_event.set()
+            self.has_executed = False
+            self.grab_enabled = False
+            self.collected_x.clear()
+            self.collected_y.clear()
+            self.collected_z.clear()
+            self.publish_status("收到复位指令：机械臂回到初始姿态。")
+            self.send_joint_angles(0.0, 1.0, -1.57, -1.57, 0.0, 0.0, mode=2)
+        elif cmd == "STOP":
+            self.abort_event.set()
+            self.grab_enabled = False
+            self.publish_status("收到停止指令：停止接收新的抓取任务，机械臂保持当前位置。")
+        elif cmd in ("RELEASE", "OPEN", "OPEN_GRIPPER"):
+            self.release_gripper()
+        elif cmd in ("CLOSE", "CLOSE_GRIPPER"):
+            self.close_gripper()
+
+    def release_gripper(self):
+        if self.is_busy:
+            self.publish_status("机械臂正在执行抓取流程，请等待完成后再松开夹爪。")
+            return
+        pose = list(self.last_pose)
+        pose[5] = 1.57
+        self.publish_status("收到手机指令：原地张开夹爪，放下水瓶。")
+        self.send_joint_angles(*pose, mode=2)
+
+    def close_gripper(self):
+        if self.is_busy:
+            self.publish_status("机械臂正在执行抓取流程，夹爪闭合指令已忽略。")
+            return
+        pose = list(self.last_pose)
+        pose[5] = -0.4
+        self.publish_status("收到手机指令：原地闭合夹爪。")
+        self.send_joint_angles(*pose, mode=2)
 
     def send_joint_angles(self, rad1, rad2, rad3, rad4, rad5, rad6, mode=1):
         """严格大端序打包发送函数"""
         if not self.serial_port or not self.serial_port.is_open:
+            self.get_logger().error("❌ 串口未打开，机械臂控制帧没有发送。")
             return
 
         j1 = int(rad1 * 1000)
@@ -103,12 +183,28 @@ class ArmGrabberNode(Node):
         data[15] = 0xBB 
 
         try:
-            self.serial_port.write(data)
-            self.serial_port.flush()  
+            with self.serial_lock:
+                total = 0
+                # STM32/USB CDC 偶尔会漏掉单帧，演示动作每次重复下发 3 次更稳。
+                for _ in range(3):
+                    total += self.serial_port.write(data)
+                    self.serial_port.flush()
+                    time.sleep(0.03)
+            self.last_pose = [rad1, rad2, rad3, rad4, rad5, rad6]
+            self.get_logger().info(
+                f"串口下发成功: J1={rad1:.3f}, J2={rad2:.3f}, J3={rad3:.3f}, "
+                f"J4={rad4:.3f}, J5={rad5:.3f}, J6={rad6:.3f}, mode={mode}, bytes={total}"
+            )
         except Exception as e:
             self.get_logger().error(f"❌ 串口数据发射异常: {e}")
 
+    def wait_or_abort(self, seconds):
+        return self.abort_event.wait(seconds)
+
     def target_callback(self, msg):
+        if not self.grab_enabled:
+            return
+
         # 🛡️ 已经完成抓取，忽略后续所有坐标
         if self.has_executed:
             return
@@ -123,13 +219,13 @@ class ArmGrabberNode(Node):
 
         # ⏳ 样本数不足，继续等待
         if len(self.collected_x) < self.samples_needed:
-            self.get_logger().info(f"📊 已收集 {len(self.collected_x)}/{self.samples_needed} 帧坐标...")
+            self.publish_status(f"正在收集双目坐标：{len(self.collected_x)}/{self.samples_needed} 帧...")
             return
 
         # ✅ 样本充足，计算平均值
         avg_x = sum(self.collected_x) / len(self.collected_x)
         avg_z = sum(self.collected_z) / len(self.collected_z)
-        self.get_logger().info(f"🎯 坐标平均完成: x={avg_x:.3f}, z={avg_z:.3f} （共 {len(self.collected_x)} 帧）")
+        self.publish_status(f"目标坐标平均完成：x={avg_x:.3f} m，z={avg_z:.3f} m，共 {len(self.collected_x)} 帧。")
 
         # 用平均值覆盖 cam_x、cam_z，走后续逻辑
         cam_x = avg_x
@@ -139,6 +235,7 @@ class ArmGrabberNode(Node):
         # 📛 标记已执行，此后消息一律忽略
         # ==========================================
         self.has_executed = True
+        self.grab_enabled = False
 
         # 1. 空间几何投影
         cos_pitch = self.measured_horizontal_y / self.measured_cam_z
@@ -192,29 +289,52 @@ class ArmGrabberNode(Node):
         # ====================================================
         # 🎯 黄金动态时序抓取流水线 (核心微调区)
         # ====================================================
-        self.get_logger().info(f"📊 最终下发底层真实弧度 -> J1:{j1:.3f} | J2:{j2:.3f} | J3:{j3:.3f} | J4:{j4:.3f}")
+        self.publish_status(f"逆运动学解算完成：J1={j1:.3f}, J2={j2:.3f}, J3={j3:.3f}, J4={j4:.3f}")
+        threading.Thread(
+            target=self.execute_grab_sequence,
+            args=(j1, j2, j3, j4, j5),
+            daemon=True,
+        ).start()
 
-        self.get_logger().info("🤖 动作 1: 手臂高高拱起，向目标上方平滑逼近...")
-        # 💡 优化：把高举弧度从 +0.15 缩减为 +0.06，减少俯冲惯性和晃动
-        self.send_joint_angles(j1, j2 + 0.06, j3, j4 - 0.06, j5, 1.57, mode=2) 
-        time.sleep(2.0)
-        
-        self.get_logger().info("🤖 动作 2: 向下沉降，预留充足时间消除重力震动...")
-        self.send_joint_angles(j1, j2, j3, j4, j5, 1.57, mode=2) 
-        # 💡 强力优化：从 1.0 秒暴增到 2.5 秒！给大臂完全沉降并平息余震的时间，确保高度100%到位
-        time.sleep(3.0) 
-        
-        self.get_logger().info("🤖 动作 3: 全身完全静止，合拢夹爪进行完美咬合！")
-        self.send_joint_angles(j1, j2, j3, j4, j5, -0.4, mode=2) 
-        time.sleep(1.2)
-        
-        self.get_logger().info("🤖 动作 4: 成功捕获，垂直向上抬起...")
-        self.send_joint_angles(j1, j2 + 0.3, j3, j4 - 0.3, j5, -0.4, mode=2)
-        time.sleep(2.0)
-        
-        self.get_logger().info("🏠 动作 5: 安全归位（直立全零）。")
-        self.send_joint_angles(0.0, 0.0, 0.0, 0.0, 0.0, -0.4, mode=2)
-        time.sleep(1.0) 
+    def execute_grab_sequence(self, j1, j2, j3, j4, j5):
+        self.is_busy = True
+        try:
+            if self.abort_event.is_set():
+                self.publish_status("抓取流程已取消。")
+                return
+
+            self.publish_status("动作1：机械臂抬高，移动到水杯上方。")
+            self.send_joint_angles(j1, j2 + 0.06, j3, j4 - 0.06, j5, 1.57, mode=2)
+            if self.wait_or_abort(2.0): return
+
+            self.publish_status("动作2：向下靠近水杯，等待机械臂稳定。")
+            self.send_joint_angles(j1, j2, j3, j4, j5, 1.57, mode=2)
+            if self.wait_or_abort(3.0): return
+
+            self.publish_status("动作3：夹爪闭合，抓取水杯。")
+            self.send_joint_angles(j1, j2, j3, j4, j5, -0.4, mode=2)
+            if self.wait_or_abort(1.2): return
+
+            self.publish_status("动作4：抓取成功，抬起水杯。")
+            self.send_joint_angles(j1, j2 + 0.3, j3, j4 - 0.3, j5, -0.4, mode=2)
+            if self.wait_or_abort(2.0): return
+
+            # 正右侧展示位：不再叠加当前识别角度，保证每次都转到稳定的右侧方向。
+            right_j1 = max(-1.20, min(1.20, self.right_turn_rad))
+            self.publish_status(f"动作5：机械臂夹着水杯转到正右侧展示位，J1={right_j1:.3f} rad。")
+            self.send_joint_angles(right_j1, j2 + 0.3, j3, j4 - 0.3, j5, -0.4, mode=2)
+            if self.wait_or_abort(2.0): return
+
+            self.publish_status("动作6：保持夹爪夹紧，手臂向内回收，方便下一次抓取准备。")
+            self.send_joint_angles(right_j1, 0.45, -1.10, -0.35, 0.0, -0.4, mode=2)
+            if self.wait_or_abort(1.8): return
+
+            self.publish_status("演示完成：机械臂夹着水杯停在右侧回收姿态，可复位后进行下一次抓取。")
+        finally:
+            if self.abort_event.is_set():
+                self.publish_status("抓取流程已停止，机械臂保持当前位置。")
+            self.is_busy = False
+            self.grab_enabled = False
 
 def main(args=None):
     rclpy.init(args=args)

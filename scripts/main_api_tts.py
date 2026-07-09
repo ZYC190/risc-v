@@ -2,26 +2,42 @@ import os
 import re
 import tempfile
 import datetime
+import subprocess
 import requests
 from pydub import AudioSegment
-from pydub.playback import play
 from openai import OpenAI
 import speech_recognition as sr
 from aip import AipSpeech  # 引入百度官方智能云 SDK
 
 # ==========================================
-# ⚠️ 战车核心通信密钥配置（实战部署前必填！）⚠️
+# API 密钥配置：优先读取环境变量；也可在仓库根目录创建 .robot_secrets
 # ==========================================
-# 1. DeepSeek 云端大脑密钥
-DEEPSEEK_API_KEY = "YOUR_DEEPSEEK_API_KEY"
+def _load_local_secrets():
+    candidates = [
+        os.path.expanduser("~/.robot_secrets"),
+        os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".robot_secrets")),
+    ]
+    for path in candidates:
+        if not os.path.exists(path):
+            continue
+        with open(path, "r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                key, value = line.split("=", 1)
+                os.environ.setdefault(key.strip(), value.strip().strip('"').strip("'"))
 
-# 2. 百度智能云 语音密钥 (同时用于识别和合成)
-BAIDU_APP_ID = "YOUR_BAIDU_APP_ID"  # <--- ⚠️ 这里必须填入你刚才申请的百度 APP ID
-BAIDU_API_KEY = "YOUR_BAIDU_API_KEY"
-BAIDU_SECRET_KEY = "YOUR_BAIDU_SECRET_KEY"
 
-# 3. 高德地图气象雷达密钥
-GAODE_API_KEY = "YOUR_GAODE_API_KEY"  
+_load_local_secrets()
+
+DEEPSEEK_API_KEY = os.environ.get("DEEPSEEK_API_KEY", "")
+
+BAIDU_APP_ID = os.environ.get("BAIDU_APP_ID", "")
+BAIDU_API_KEY = os.environ.get("BAIDU_API_KEY", "")
+BAIDU_SECRET_KEY = os.environ.get("BAIDU_SECRET_KEY", "")
+
+GAODE_API_KEY = os.environ.get("GAODE_API_KEY", "")
 CITY_CODE = "500000"  
 # ==========================================
 
@@ -87,7 +103,7 @@ def baidu_tts(text):
 
 
 def play_audio(audio_file):
-    """同步播放音频（重采样修复版）"""
+    """同步播放音频：固定走 ALSA 设备，避开 pydub 默认 JACK/ALSA 路由问题。"""
     try:
         if os.path.exists(audio_file):
             # 1. 读取云端传回来的音频
@@ -99,8 +115,41 @@ def play_audio(audio_file):
             # 3. 🔥 核心黑科技：强制重采样到 48000Hz，满足主板声卡的强迫症！
             fixed_audio = louder_audio.set_frame_rate(48000)
             
-            # 4. 用 Python 原生播放器播放！
-            play(fixed_audio)
+            fixed_audio = fixed_audio.set_channels(1).set_sample_width(2)
+
+            fixed_wav = tempfile.NamedTemporaryFile(delete=False, suffix='.wav')
+            fixed_wav.close()
+            fixed_audio.export(fixed_wav.name, format="wav")
+
+            # 优先使用 USB 声卡；如果你把喇叭插在板载 3.5mm，可设置：
+            # export TTS_AUDIO_DEVICE=plughw:1,0
+            devices = [
+                os.environ.get("TTS_AUDIO_DEVICE", "plughw:3,0"),
+                "plughw:1,0",
+                "default",
+            ]
+            last_error = ""
+            for device in devices:
+                if not device:
+                    continue
+                print(f"🔊 ALSA 播放设备: {device}")
+                result = subprocess.run(
+                    ["aplay", "-q", "-D", device, fixed_wav.name],
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                    timeout=20,
+                )
+                if result.returncode == 0:
+                    try:
+                        os.remove(fixed_wav.name)
+                    except OSError:
+                        pass
+                    return
+                last_error = result.stderr.strip()
+                print(f"⚠️ 设备 {device} 播放失败，尝试下一个设备...")
+
+            print(f"❌ 所有播放设备都失败: {last_error}")
         else:
             print(f'❌ 找不到音频文件: {audio_file}')
     except Exception as e:

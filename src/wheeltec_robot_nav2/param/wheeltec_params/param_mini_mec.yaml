@@ -28,7 +28,7 @@ amcl:
     recovery_alpha_fast: 0.0        #快速平均权重过滤器的指数衰减率，用于决定何时通过添加随机姿势进行恢复。
     recovery_alpha_slow: 0.0        #慢速平均权重过滤器的指数衰减率，用于决定何时通过添加随机姿势进行恢复。
     resample_interval: 2            #重采样之前所需的过滤器更新次数
-    robot_model_type: "nav2_amcl::DifferentialMotionModel" #插件类的完全限定类型。
+    robot_model_type: "nav2_amcl::OmniMotionModel" #插件类的完全限定类型。
     #选项为“nav2_amcl::DifferentialMotionModel”和“nav2_amcl::OmniMotionModel”。
 
     save_pose_rate: 0.5             #将最后估计的姿势和协方差存储到参数服务器的最大速率（Hz）
@@ -63,7 +63,7 @@ bt_navigator:
   ros__parameters:
     use_sim_time: False
     transform_tolerance: 0.1 #变换容差
-    goal_reached_tol: 0.25 #接受姿势作为目标的容忍度(m)
+    goal_reached_tol: 0.10 #接受姿势作为目标的容忍度(m)
     global_frame: map
     robot_base_frame: base_footprint
     odom_topic: /odom_combined
@@ -100,7 +100,7 @@ controller_server:
     # Progress checker parameters
     progress_checker: #进度检查器
       plugin: "nav2_controller::SimpleProgressChecker"
-      required_movement_radius: 0.5 #所需运动半径
+      required_movement_radius: 0.02 #所需运动半径
       movement_time_allowance: 10.0 #移动时间容差
     # Goal checker parameters
     #precise_goal_checker:
@@ -111,32 +111,32 @@ controller_server:
     general_goal_checker: #目标检查器
       stateful: True
       plugin: "nav2_controller::SimpleGoalChecker"
-      xy_goal_tolerance: 0.25  #xy 目标容差
+      xy_goal_tolerance: 0.18  #xy 目标容差
       yaw_goal_tolerance: 0.25 #yaw目标容差
     # DWB parameters
     FollowPath: 
       plugin: "nav2_rotation_shim_controller::RotationShimController" #旋转控制器
       primary_controller: "nav2_mppi_controller::MPPIController" #MPPI控制器
-       angular_dist_threshold: 0.785
-       forward_sampling_distance: 0.5
-       rotate_to_heading_angular_vel: 1.0
-       max_angular_accel: 1.5
-       simulate_ahead_time: 1.0
+      angular_dist_threshold: 0.785
+      forward_sampling_distance: 0.5
+      rotate_to_heading_angular_vel: 1.0
+      max_angular_accel: 1.5
+      simulate_ahead_time: 1.0
       rotate_to_goal_heading: True
     
       time_steps: 56    #候选轨迹中的时间步长（点）数
       model_dt: 0.05    #每个时间步长的时间步长的长度dt（以秒为单位）是预测范围
       batch_size: 2000  #在给定迭代中从当前最佳控制序列中随机采样的候选轨迹的数量
-      vx_std: 0.2       #Vx 的抽样标准差
+      vx_std: 0.15       #Vx 的抽样标准差
       vy_std: 0.2       #Vy 的抽样标准差
       wz_std: 0.4       #Wz（角速度）的抽样标准差
-       vx_max: 0.2       #目标最大前进速度（米/秒）
-       vx_min: -0.2      #目标最大反向速度（米/秒）
-       vy_max: 0.2       #如果使用Omni运动模型，目标最大横向速度（m/s）
-       wz_max: 1.0       #最大旋转速度（弧度/秒）
+      vx_max: 0.28       #目标最大前进速度（米/秒）
+      vx_min: -0.16      #目标最大反向速度（米/秒）
+      vy_max: 0.25       #如果使用Omni运动模型，目标最大横向速度（m/s）
+      wz_max: 1.2       #最大旋转速度（弧度/秒）
       ax_max: 1.5
       ax_min: -1.5
-      ay_max: 0.0
+      ay_max: 1.5
       az_max: 1.5
       iteration_count: 1 #迭代次数
       prune_distance: 1.5 #路径上距离机器人最近点的距离（米）
@@ -144,7 +144,7 @@ controller_server:
       transform_tolerance: 0.1 #使用 TF（s）进行数据转换的时间容差
       temperature: 0.3 #根据成本选择轨迹，0表示使用成本最佳的控制，巨大的值将导致仅取所有轨迹的平均值而不考虑成本。
       gamma: 0.015 #平滑度（高）和低能耗（低）之间的权衡,保持默认值
-      motion_model: "DiffDrive" #用于轨迹规划的所需运动模型。选项包括DiffDrive、Omni或Ackermann。
+      motion_model: "Omni" #用于轨迹规划的所需运动模型。选项包括DiffDrive、Omni或Ackermann。
       visualize: false #是否发布调试轨迹以供可视化。
       TrajectoryVisualizer: #轨迹可视化
         trajectory_step: 5 #轨迹之间的步骤可视化以对候选轨迹池进行下采样
@@ -166,8 +166,8 @@ controller_server:
       GoalCritic: #当距离目标较近时，GoalCritic会激励机器人在空间上向目标导航
         enabled: true
         cost_power: 1
-        cost_weight: 15.0 #权重参数
-        threshold_to_consider: 1.4  #机器人与目标之间的最小距离（米），超过此距离则要考虑目标距离成本。
+        cost_weight: 20.0 #权重参数
+        threshold_to_consider: 1.0  #机器人与目标之间的最小距离（米），超过此距离则要考虑目标距离成本。
 
       ObstaclesCritic:
         enabled: true
@@ -177,7 +177,7 @@ controller_server:
         consider_footprint: false #是否使用点成本（如果机器人是圆形的或者计算能力低）或计算 SE2 足迹成本
         collision_cost: 10000.0 #应用于轨迹中真实碰撞的成本。
         collision_margin_distance: 0.04 #碰撞边缘距离，缩小以允许更贴近障碍物（原0.1，建议0.03-0.05）
-        near_goal_distance: 0.4 #靠近目标的距离（米）停止应用优先障碍物项，以允许机器人平稳地收敛到靠近障碍物的目标姿势
+        near_goal_distance: 0.30 #靠近目标的距离（米）停止应用优先障碍物项，以允许机器人平稳地收敛到靠近障碍物的目标姿势
         cost_scaling_factor: 10.0 #增大成本缩放因子，让障碍物成本衰减更快（原5.0）
         inflation_radius: 0.05  #膨胀半径，仅限Humble
 

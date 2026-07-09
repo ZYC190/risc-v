@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """
 融合版 jarvis_node：声源定位 + 唤醒词 + 机械臂控制 + DeepSeek聊天
-- 默认麦克风开启，持续监听唤醒词 "小薇小薇"
-- 叫"小薇小薇" → 从麦克风阵列获取声源角度 → 小车转向声源 → 进入聊天模式
-- 没说"小薇小薇"时完全不响应聊天
+- 默认麦克风开启，不需要唤醒词，直接监听用户说话
+- 每听到一句话 → 尝试从麦克风阵列获取声源角度 → 小车转向声源 → 进入聊天/控制处理
+- 家庭服务机器人名字叫“小微”
 - GUI 语音页面按钮可开启/关闭麦克风
 - 机械臂动作指令始终可用（唤醒后执行）
 """
@@ -14,9 +14,17 @@ import re
 import tempfile
 import datetime
 import threading
+import queue
 import time
 import math
 import requests
+import json
+import subprocess
+
+try:
+    import paho.mqtt.client as mqtt
+except Exception:
+    mqtt = None
 
 import rclpy
 from rclpy.node import Node
@@ -33,15 +41,34 @@ import speech_recognition as sr
 from aip import AipSpeech
 
 # ==========================================
-# ⚠️ 战车核心通信密钥配置
+# API 密钥配置：优先读取环境变量；也可在仓库根目录创建 .robot_secrets
 # ==========================================
-DEEPSEEK_API_KEY = "YOUR_DEEPSEEK_API_KEY"
+def _load_local_secrets():
+    candidates = [
+        os.path.expanduser("~/.robot_secrets"),
+        os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".robot_secrets")),
+    ]
+    for path in candidates:
+        if not os.path.exists(path):
+            continue
+        with open(path, "r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                key, value = line.split("=", 1)
+                os.environ.setdefault(key.strip(), value.strip().strip('"').strip("'"))
 
-BAIDU_APP_ID = "YOUR_BAIDU_APP_ID"
-BAIDU_API_KEY = "YOUR_BAIDU_API_KEY"
-BAIDU_SECRET_KEY = "YOUR_BAIDU_SECRET_KEY"
 
-GAODE_API_KEY = "YOUR_GAODE_API_KEY"
+_load_local_secrets()
+
+DEEPSEEK_API_KEY = os.environ.get("DEEPSEEK_API_KEY", "")
+
+BAIDU_APP_ID = os.environ.get("BAIDU_APP_ID", "")
+BAIDU_API_KEY = os.environ.get("BAIDU_API_KEY", "")
+BAIDU_SECRET_KEY = os.environ.get("BAIDU_SECRET_KEY", "")
+
+GAODE_API_KEY = os.environ.get("GAODE_API_KEY", "")
 CITY_CODE = "500000"
 # ==========================================
 
@@ -53,6 +80,8 @@ chat_history = [{"role": "system", "content": "初始化人设"}]
 # 声源角度（由ROS2回调更新）
 audio_angle = 0
 last_angle = -999
+audio_angle_valid = False
+audio_awake_flag = 0
 angle_lock = threading.Lock()
 
 # 里程计当前朝向
@@ -123,7 +152,22 @@ def play_audio_file(audio_file):
         if os.path.exists(audio_file):
             audio = AudioSegment.from_file(audio_file, parameters=["-loglevel", "quiet"])
             fixed_audio = (audio + 15).set_frame_rate(48000)
-            play(fixed_audio)
+            temp_play_file = tempfile.NamedTemporaryFile(delete=False, suffix='.wav')
+            temp_play_file.close()
+            fixed_audio.export(temp_play_file.name, format="wav")
+            try:
+                subprocess.run(
+                    ["aplay", "-q", temp_play_file.name],
+                    check=True,
+                    timeout=25,
+                )
+            except Exception:
+                play(fixed_audio)
+            finally:
+                try:
+                    os.unlink(temp_play_file.name)
+                except OSError:
+                    pass
         else:
             print(f'❌ 找不到音频文件: {audio_file}')
     except Exception as e:
@@ -154,6 +198,10 @@ class JarvisCommander(Node):
 
         # ------ 百度语音识别 ------
         self.client_asr = AipSpeech(BAIDU_APP_ID, BAIDU_API_KEY, BAIDU_SECRET_KEY)
+        self.care_dialogue_topic = "home/care/dialogue"
+        self.parent_talk_topic = "home/care/parent_talk"
+        self.mqtt_client = None
+        self._init_mqtt_bridge()
 
         # ------ GUI 联动 ------
         self.voice_log_pub = self.create_publisher(String, '/voice_log', 10)
@@ -162,10 +210,18 @@ class JarvisCommander(Node):
 
         # ------ 麦克风默认开启 ------
         self.is_listening = True
+        self.remote_talk_active = threading.Event()
+        self.speech_lock = threading.Lock()
+        self.ignore_mic_until = 0.0
+        self.parent_talk_queue = queue.Queue()
 
         self.get_logger().info("🚀 融合版 Jarvis 启动！声源定位 + 唤醒词 + 机械臂 + 聊天")
         self.get_logger().info("🔗 GUI 语音面板联动已就绪 (/voice_log + /voice_trigger)")
-        self.get_logger().info("🎤 麦克风默认开启，等待唤醒词 '小薇小薇'...")
+        self.get_logger().info("🎤 麦克风默认开启，无需唤醒词，可直接说话。")
+
+        self.parent_talk_thread = threading.Thread(target=self._parent_talk_worker)
+        self.parent_talk_thread.daemon = True
+        self.parent_talk_thread.start()
 
         # 启动后台监听线程
         self.listen_thread = threading.Thread(target=self.listen_and_act)
@@ -176,14 +232,103 @@ class JarvisCommander(Node):
         time.sleep(0.3)
         self._send_voice_log("STATUS:ON")
 
+    def _init_mqtt_bridge(self):
+        if mqtt is None:
+            self.get_logger().warning("⚠️ 未安装 paho-mqtt，现场对话不会同步到手机 App")
+            return
+        try:
+            self.mqtt_client = mqtt.Client(client_id="jarvis_care_dialogue")
+            self.mqtt_client.on_connect = self._on_mqtt_connect
+            self.mqtt_client.on_message = self._on_mqtt_message
+            self.mqtt_client.connect("127.0.0.1", 1883, 60)
+            self.mqtt_client.loop_start()
+            self.get_logger().info(f"📲 现场对话同步已接入 MQTT: {self.care_dialogue_topic}")
+        except Exception as e:
+            self.mqtt_client = None
+            self.get_logger().warning(f"⚠️ MQTT 对话同步连接失败: {e}")
+
+    def _on_mqtt_connect(self, client, userdata, flags, rc, *args):
+        if rc == 0:
+            client.subscribe(self.parent_talk_topic)
+            self.get_logger().info(f"📥 已订阅家长远程发话: {self.parent_talk_topic}")
+        else:
+            self.get_logger().warning(f"⚠️ MQTT 连接返回码异常: {rc}")
+
+    def _on_mqtt_message(self, client, userdata, msg):
+        if msg.topic != self.parent_talk_topic:
+            return
+        try:
+            payload = msg.payload.decode("utf-8", errors="ignore")
+            data = json.loads(payload)
+            text = str(data.get("text", "")).strip() if isinstance(data, dict) else str(data).strip()
+        except Exception:
+            text = msg.payload.decode("utf-8", errors="ignore").strip()
+        if not text:
+            return
+        self.parent_talk_queue.put(text)
+
+    def _parent_talk_worker(self):
+        while True:
+            text = self.parent_talk_queue.get()
+            try:
+                self._handle_parent_talk(text)
+            except Exception as e:
+                self.get_logger().warning(f"⚠️ 家长发话播报异常: {e}")
+            finally:
+                self.parent_talk_queue.task_done()
+
+    def _handle_parent_talk(self, text):
+        old_listening_state = self.is_listening
+        self.remote_talk_active.set()
+        self.is_listening = False
+        self.ignore_mic_until = time.time() + 30.0
+        try:
+            self.get_logger().info(f"📱 家长远程发话: {text}")
+            self._send_voice_log(f"📱 家长: {text}")
+            self._send_voice_log("🔇 家长远程发话处理中，临时暂停现场麦克风")
+            self._publish_care_dialogue("parent", text)
+
+            self._send_voice_log("📣 正在播报家长原话")
+            self.speak_and_play(text, publish_dialogue=False)
+        finally:
+            self.ignore_mic_until = time.time() + 2.0
+            self.remote_talk_active.clear()
+            self.is_listening = old_listening_state
+            self._send_voice_log("🎤 现场麦克风已恢复")
+
+    def _publish_care_dialogue(self, role, text):
+        clean_text = remove_think_tag(str(text)).strip()
+        if not clean_text or self.mqtt_client is None:
+            return
+        payload = {
+            "role": role,
+            "text": clean_text,
+            "timestamp": datetime.datetime.now().isoformat(timespec="seconds"),
+        }
+        try:
+            self.mqtt_client.publish(
+                self.care_dialogue_topic,
+                json.dumps(payload, ensure_ascii=False),
+                qos=0,
+                retain=False,
+            )
+        except Exception as e:
+            self.get_logger().warning(f"⚠️ 现场对话同步失败: {e}")
+
     # ==================== 声源定位回调 ====================
     def angle_callback(self, msg):
-        global audio_angle, last_angle
+        global audio_angle, last_angle, audio_angle_valid, audio_awake_flag
         if msg.data and len(msg.data) >= 1:
             with angle_lock:
-                audio_angle = msg.data[0]
+                angle = int(msg.data[0])
+                awake = int(msg.data[1]) if len(msg.data) >= 2 else 0
+                audio_angle = angle
+                audio_awake_flag = awake
+                if awake == 1 or angle != last_angle:
+                    audio_angle_valid = True
                 if audio_angle != last_angle:
                     last_angle = audio_angle
+                    self.get_logger().info(f"📍 声源角度更新: {audio_angle}° awake={audio_awake_flag}")
 
     def odom_callback(self, msg):
         global current_yaw
@@ -194,24 +339,32 @@ class JarvisCommander(Node):
 
     def rotate_to_angle(self):
         """读取当前声源角度，让小车转向到正对声源方向"""
-        global audio_angle, current_yaw
+        global audio_angle, current_yaw, audio_angle_valid, audio_awake_flag
 
         with angle_lock:
             target_angle = audio_angle
+            has_angle = audio_angle_valid
+            awake_flag = audio_awake_flag
 
-        if target_angle is None or target_angle == -1:
-            self.get_logger().warn("⚠️ 未获取到有效声源角度，跳过旋转")
+        if target_angle is None or target_angle == -1 or not has_angle:
+            self.get_logger().warn("⚠️ 未收到麦克风阵列声源定位包，跳过转向")
+            self._send_voice_log("⚠️ 未收到声源角度，跳过转向")
             return False
+
+        if target_angle <= 5 or target_angle >= 355:
+            self.get_logger().info(f"✅ 声源角度 {target_angle}°，用户在正前方，无需转向")
+            self._send_voice_log("✅ 声源在正前方，无需转向")
+            return True
 
         with odom_lock:
             odom_start_raw = math.degrees(current_yaw) + 180
 
         # 计算旋转方向
         if 0 < target_angle < 180:
-            direction = 1.0
+            direction = -1.0
             rotate_angle = target_angle
         else:
-            direction = -1.0
+            direction = 1.0
             rotate_angle = 360 - target_angle
 
         # 目标里程计角度
@@ -269,6 +422,23 @@ class JarvisCommander(Node):
         log_msg.data = text
         self.voice_log_pub.publish(log_msg)
 
+    def reset_voice_angle(self):
+        """开始听一句新话前，清空上一句的声源定位状态。"""
+        global audio_angle_valid, audio_awake_flag
+        with angle_lock:
+            audio_angle_valid = False
+            audio_awake_flag = 0
+
+    def face_current_speaker(self, label="声源"):
+        """每次识别到用户说话后，按最新声源角度转向说话人。"""
+        with angle_lock:
+            current_angle = audio_angle
+            has_angle = audio_angle_valid
+        if has_angle:
+            self.get_logger().info(f"📍 {label}角度: {current_angle}°")
+            self._send_voice_log(f"📍 {label}角度: {current_angle}°")
+        return self.rotate_to_angle()
+
     # ==================== 机械臂控制 ====================
     def send_pose(self, angles):
         """发送机械臂角度"""
@@ -277,18 +447,23 @@ class JarvisCommander(Node):
         msg.position = [float(a) for a in angles]
         self.publisher_.publish(msg)
 
-    def speak_and_play(self, text):
+    def speak_and_play(self, text, publish_dialogue=True):
         """发音模块：百度TTS合成 + 播放"""
-        clean_text = remove_think_tag(text).strip()
-        if not clean_text:
-            return
+        with self.speech_lock:
+            clean_text = remove_think_tag(text).strip()
+            if not clean_text:
+                return
 
-        self.get_logger().info(f"🎙️ 机器人发音: {clean_text}")
-        self._send_voice_log(f"🤖 AI: {clean_text}")
+            self.ignore_mic_until = time.time() + 8.0
+            self.get_logger().info(f"🎙️ 机器人发音: {clean_text}")
+            if publish_dialogue:
+                self._send_voice_log(f"🤖 AI: {clean_text}")
+                self._publish_care_dialogue("robot", clean_text)
 
-        audio_file = baidu_tts(clean_text)
-        if audio_file:
-            play_audio_file(audio_file)
+            audio_file = baidu_tts(clean_text)
+            if audio_file:
+                play_audio_file(audio_file)
+            self.ignore_mic_until = time.time() + 1.5
 
     # ==================== DeepSeek 对话 ====================
     def ask_deepseek_api(self, prompt):
@@ -298,9 +473,11 @@ class JarvisCommander(Node):
 
         current_time = datetime.datetime.now().strftime("%H点%M分")
         system_prompt = (
-            f"你是装在AGV小车上的智能语音助手。时间：{current_time}。"
+            f"你叫小微，是一台家庭服务型机器人，运行在K1 MUSE Pi Pro和ROS2系统上。时间：{current_time}。"
             f"天气：{get_weather()}。"
-            f"用简短、口语化、幽默的中文回答，不超过50字。"
+            "你的职责是陪伴、看护、安全提醒、智能家居协助和简单生活服务。"
+            "回答要温柔、可靠、像家里的机器人管家；尽量用简短口语中文，不超过60字。"
+            "如果用户提到危险、儿童看护、燃气、烟雾或一氧化碳，要优先提醒安全处理。"
         )
         chat_history[0]["content"] = system_prompt
         chat_history.append({"role": "user", "content": prompt})
@@ -338,9 +515,10 @@ class JarvisCommander(Node):
         recognizer = sr.Recognizer()
         recognizer.pause_threshold = 0.8
         try:
-            with sr.Microphone(device_index=0, sample_rate=16000) as source:
+            mic_index = int(os.environ.get("JARVIS_MIC_INDEX", "3"))
+            with sr.Microphone(device_index=mic_index, sample_rate=16000) as source:
                 print("\n" + "=" * 45)
-                self.get_logger().info("👂 [环境静音校准...] ")
+                self.get_logger().info(f"👂 [环境静音校准...] 麦克风设备 index={mic_index}")
                 recognizer.adjust_for_ambient_noise(source, duration=1.0)
                 self.get_logger().info("🎤 [请说话...] ")
                 audio = recognizer.listen(source, timeout=timeout, phrase_time_limit=phrase_limit)
@@ -354,10 +532,66 @@ class JarvisCommander(Node):
             self.get_logger().error(f"⚠️ 麦克风或识别异常: {e}")
             return ""
 
+    def handle_user_text(self, cmd_text):
+        """处理唤醒后的连续对话内容：动作指令优先，其余交给家庭服务聊天。"""
+        self.get_logger().info(f"\n👤 用户说: {cmd_text}")
+        self._send_voice_log(f"👤 用户: {cmd_text}")
+        self._publish_care_dialogue("user", cmd_text)
+
+        clean_text = re.sub(r'[，。！？、,\.!\?\s]+', '', cmd_text)
+        sleep_keywords = ["退下", "休眠", "结束聊天", "不用了", "再见", "拜拜"]
+        if any(keyword in clean_text for keyword in sleep_keywords):
+            self.get_logger().info("💤 用户结束连续对话，回到休眠。")
+            self._send_voice_log("💤 已退出连续对话，回到休眠")
+            self.speak_and_play("好的，我先待机，有需要再叫我。")
+            return "sleep"
+
+        control_keywords = ["回正", "点头", "左", "右", "跳舞", "抓", "松"]
+
+        if any(keyword in clean_text for keyword in control_keywords):
+            self.get_logger().info("🦾 检测到【动作指令】，直接控制硬件！")
+            self._send_voice_log("🦾 [动作指令] 直接控制硬件...")
+
+            if "回正" in clean_text:
+                self.send_pose([0.0, 0.0, 0.0, -1.57, 0.0, 0.0])
+                self.speak_and_play("好的，机械臂已回正。")
+            elif "点头" in clean_text:
+                self.send_pose([0.0, 0.0, 0.0, -1.0, 0.0, 0.0])
+                time.sleep(0.5)
+                self.send_pose([0.0, 0.0, 0.0, -1.57, 0.0, 0.0])
+                self.speak_and_play("我在这里，随时为家里服务。")
+            elif "左" in clean_text:
+                self.send_pose([-1.0, 0.0, 0.0, -1.57, 0.0, 0.0])
+                self.speak_and_play("好的，我向左看一下。")
+            elif "右" in clean_text:
+                self.send_pose([1.0, 0.0, 0.0, -1.57, 0.0, 0.0])
+                self.speak_and_play("好的，我向右看一下。")
+            elif "跳舞" in clean_text:
+                self.speak_and_play("收到，给家里来一点气氛。")
+                self.send_pose([0.5, 0.0, 0.0, -1.0, 0.0, 0.0])
+                time.sleep(0.5)
+                self.send_pose([-0.5, 0.0, 0.0, -2.0, 0.0, 0.0])
+                time.sleep(0.5)
+                self.send_pose([0.0, 0.0, 0.0, -1.57, 0.0, 0.0])
+            elif "抓" in clean_text:
+                self.send_pose([0.0, 0.0, 0.0, -1.57, 0.0, -0.9])
+                self.speak_and_play("好的，夹爪已夹紧。")
+            elif "松" in clean_text:
+                self.send_pose([0.0, 0.0, 0.0, -1.57, 0.0, 0.9])
+                self.speak_and_play("好的，夹爪已松开。")
+            return "handled"
+
+        self.get_logger().info("💬 连续聊天模式：呼叫 DeepSeek...")
+        self._send_voice_log("💬 [家庭服务聊天] 正在思考...")
+        ai_reply = self.ask_deepseek_api(cmd_text)
+        self.speak_and_play(ai_reply)
+        return "handled"
+
     # ==================== 核心监听循环 ====================
     def listen_and_act(self):
-        """核心监听与分发循环：唤醒词检测 → 声源转向 → 指令/聊天"""
+        """核心监听与分发循环：直接监听 → 尝试声源转向 → 指令/聊天"""
         time.sleep(1)
+        miss_count = 0
 
         while rclpy.ok():
             try:
@@ -366,103 +600,33 @@ class JarvisCommander(Node):
                     time.sleep(1.0)
                     continue
 
-                # ========== 阶段1: 等待唤醒词 ==========
-                self.get_logger().info("💤 休眠中，说 '小薇小薇' 来唤醒我...")
-                self._send_voice_log("💤 等待唤醒词 '小薇小薇'...")
-
-                woke_up = False
-                while not woke_up and rclpy.ok():
-                    # 检查麦克风是否在循环中被关闭
-                    if not self.is_listening:
-                        break
-
-                    text = self.listen_once(timeout=5, phrase_limit=3)
-                    if not text:
-                        continue
-
-                    # 清洗文本：去掉标点符号和空白
-                    clean_text = re.sub(r'[，。！？、,\.!\?\s]+', '', text)
-                    # 统一替换"小微"→"小薇"
-                    clean_text = clean_text.replace("小微", "小薇")
-                    self.get_logger().info(f"  � 听到: {text}  →  清洗后: {clean_text}")
-                    self._send_voice_log(f"👂 听到: {text}")
-
-                    if "小薇" in clean_text:
-                        xw_count = clean_text.count("小薇")
-                        if xw_count >= 2 or "小薇小薇" in clean_text:
-                            woke_up = True
-                            self.get_logger().info("\n🎯 检测到唤醒词【小薇小薇】！")
-                            self._send_voice_log("🎯 唤醒词检测到！")
-
-                if not rclpy.ok() or not self.is_listening:
+                if self.remote_talk_active.is_set() or time.time() < self.ignore_mic_until:
+                    time.sleep(0.3)
                     continue
 
-                # ========== 阶段2: 声源定位转向 ==========
-                with angle_lock:
-                    current_angle = audio_angle
-                self.get_logger().info(f"  声源角度: {current_angle}°")
-                self._send_voice_log(f"📍 声源角度: {current_angle}°")
+                self.get_logger().info("🎤 请直接说话，小微正在监听...")
+                self._send_voice_log("🎤 小微正在监听，可直接说话")
 
-                # 执行转向
-                self.rotate_to_angle()
+                self.reset_voice_angle()
+                cmd_text = self.listen_once(timeout=8, phrase_limit=10)
 
-                # 语音反馈
-                self.speak_and_play("我在呢，请说")
-
-                # ========== 阶段3: 指令模式 ==========
-                self.get_logger().info("\n🎤 请说出指令（5秒超时）...")
-                self._send_voice_log("🎤 请说出指令...")
-
-                cmd_text = self.listen_once(timeout=5, phrase_limit=8)
+                if self.remote_talk_active.is_set() or time.time() < self.ignore_mic_until:
+                    self.get_logger().info("🔇 已忽略机器人播报期间的麦克风输入")
+                    continue
 
                 if not cmd_text:
-                    self.get_logger().info("⏰ 未收到指令，回到休眠模式")
-                    self._send_voice_log("⏰ 超时，回到休眠")
+                    miss_count += 1
+                    self.get_logger().info(f"⏰ 未收到语音：{miss_count}/3")
+                    if miss_count >= 3:
+                        self._send_voice_log("💤 暂无语音，小微继续待命")
+                        miss_count = 0
                     continue
 
-                self.get_logger().info(f"\n👤 你说: {cmd_text}")
-                self._send_voice_log(f"👤 用户: {cmd_text}")
-
-                # ========== 阶段4: 分发 - 动作指令 or 聊天 ==========
-                control_keywords = ["回正", "点头", "左", "右", "跳舞", "抓", "松"]
-
-                if any(keyword in cmd_text for keyword in control_keywords):
-                    self.get_logger().info("🦾 检测到【动作指令】，直接控制硬件！")
-                    self._send_voice_log("🦾 [动作指令] 直接控制硬件...")
-
-                    if "回正" in cmd_text:
-                        self.send_pose([0.0, 0.0, 0.0, -1.57, 0.0, 0.0])
-                        self.speak_and_play("好的，已回正。")
-                    elif "点头" in cmd_text:
-                        self.send_pose([0.0, 0.0, 0.0, -1.0, 0.0, 0.0])
-                        time.sleep(0.5)
-                        self.send_pose([0.0, 0.0, 0.0, -1.57, 0.0, 0.0])
-                        self.speak_and_play("老板好！")
-                    elif "左" in cmd_text:
-                        self.send_pose([-1.0, 0.0, 0.0, -1.57, 0.0, 0.0])
-                        self.speak_and_play("正在向左看。")
-                    elif "右" in cmd_text:
-                        self.send_pose([1.0, 0.0, 0.0, -1.57, 0.0, 0.0])
-                        self.speak_and_play("正在向右看。")
-                    elif "跳舞" in cmd_text:
-                        self.speak_and_play("音乐起，看我摇摆！")
-                        self.send_pose([0.5, 0.0, 0.0, -1.0, 0.0, 0.0])
-                        time.sleep(0.5)
-                        self.send_pose([-0.5, 0.0, 0.0, -2.0, 0.0, 0.0])
-                        time.sleep(0.5)
-                        self.send_pose([0.0, 0.0, 0.0, -1.57, 0.0, 0.0])
-                    elif "抓" in cmd_text:
-                        self.send_pose([0.0, 0.0, 0.0, -1.57, 0.0, -0.9])
-                        self.speak_and_play("爪子已夹紧。")
-                    elif "松" in cmd_text:
-                        self.send_pose([0.0, 0.0, 0.0, -1.57, 0.0, 0.9])
-                        self.speak_and_play("爪子已张开。")
-
-                else:
-                    self.get_logger().info("💬 检测为【日常聊天】，呼叫 DeepSeek...")
-                    self._send_voice_log("💬 [闲聊模式] 呼叫 DeepSeek...")
-                    ai_reply = self.ask_deepseek_api(cmd_text)
-                    self.speak_and_play(ai_reply)
+                miss_count = 0
+                self.face_current_speaker("本句")
+                result = self.handle_user_text(cmd_text)
+                if result == "sleep":
+                    miss_count = 0
 
             except Exception as e:
                 self.get_logger().error(f"⚠️ 循环异常: {e}")
@@ -479,6 +643,9 @@ def main(args=None):
         # 停止小车
         twist = Twist()
         node.cmd_pub.publish(twist)
+        if node.mqtt_client is not None:
+            node.mqtt_client.loop_stop()
+            node.mqtt_client.disconnect()
         time.sleep(0.1)
         node.destroy_node()
         rclpy.shutdown()

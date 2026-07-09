@@ -54,13 +54,32 @@ import paho.mqtt.client as mqtt
 import serial
 
 # ==========================================
-# ⚠️ 战车核心通信密钥配置
+# API 密钥配置：优先读取环境变量；也可在仓库根目录创建 .robot_secrets
 # ==========================================
-DEEPSEEK_API_KEY = "YOUR_DEEPSEEK_API_KEY"
-BAIDU_APP_ID = "YOUR_BAIDU_APP_ID"
-BAIDU_API_KEY = "YOUR_BAIDU_API_KEY"
-BAIDU_SECRET_KEY = "YOUR_BAIDU_SECRET_KEY"
-GAODE_API_KEY = "YOUR_GAODE_API_KEY"
+def _load_local_secrets():
+    candidates = [
+        os.path.expanduser("~/.robot_secrets"),
+        os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".robot_secrets")),
+    ]
+    for path in candidates:
+        if not os.path.exists(path):
+            continue
+        with open(path, "r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                key, value = line.split("=", 1)
+                os.environ.setdefault(key.strip(), value.strip().strip('"').strip("'"))
+
+
+_load_local_secrets()
+
+DEEPSEEK_API_KEY = os.environ.get("DEEPSEEK_API_KEY", "")
+BAIDU_APP_ID = os.environ.get("BAIDU_APP_ID", "")
+BAIDU_API_KEY = os.environ.get("BAIDU_API_KEY", "")
+BAIDU_SECRET_KEY = os.environ.get("BAIDU_SECRET_KEY", "")
+GAODE_API_KEY = os.environ.get("GAODE_API_KEY", "")
 CITY_CODE = "500000"
 # ==========================================
 
@@ -69,10 +88,10 @@ CITY_CODE = "500000"
 # ==========================================
 TARGET_LOCATIONS = {
     "A_point": {
-        "x": 1.0771608352661133,
-        "y": -0.02679574303328991,
-        "qz": 0.1505363651089196,
-        "qw": 0.9886044723648554
+        "x": 1.092941403388977,
+        "y": 0.03940128907561302,
+        "qz": 0.025338841333587856,
+        "qw": 0.9996789200137568
     },
     "B_point": {   # 原点 / 人的位置
         "x": 0.21498864889144897,
@@ -344,6 +363,10 @@ class ArmController(Node):
         # ==========================================
         self.has_executed = False
 
+        # 🚦 收集许可标志位 (只有车辆到达后才允许收集双目坐标)
+        # ==========================================
+        self.ready_to_collect = False
+
         # ==========================================
         # 1. 串口初始化
         # ==========================================
@@ -416,6 +439,10 @@ class ArmController(Node):
         """接收双目相机 /target_point 坐标, 累积多帧后计算逆运动学关节角"""
         # 🛡️ 已经完成抓取，忽略后续所有坐标
         if self.has_executed:
+            return
+
+        # 🚦 车辆未到达目标点，不收集坐标
+        if not self.ready_to_collect:
             return
 
         cam_x = msg.point.x
@@ -542,6 +569,7 @@ class ArmController(Node):
 
         # 标记抓取完成，停止收集双目坐标
         self.has_executed = True
+        self.ready_to_collect = False
         print("✅ 机械臂抓取流水线完成！水瓶已夹持。")
 
     def reset_samples(self):
@@ -551,6 +579,7 @@ class ArmController(Node):
         self.collected_z.clear()
         self.ik_ready = False
         self.has_executed = False
+        self.ready_to_collect = True   # 🚦 车辆已到达，允许开始收集
         print("🔄 双目坐标累积区已清空，等待车辆完全停稳后重新采集...")
 
     def release_gripper(self):
@@ -571,7 +600,7 @@ class ArmController(Node):
 class OdomMonitorNode(Node):
     """监听里程计，判断小车是否到达目标点"""
 
-    def __init__(self, target_x, target_y, arrival_threshold=0.08):
+    def __init__(self, target_x, target_y, arrival_threshold=0.10):
         super().__init__('odom_monitor_node')
         self.target_x = target_x
         self.target_y = target_y
@@ -634,6 +663,11 @@ def wait_for_arrival(target_name, timeout=NAV_TIMEOUT):
     start_time = time.time()
     last_log_time = start_time
 
+    # 卡住检测：记录上次距离和最小距离
+    last_dist = initial_dist
+    min_dist = initial_dist
+    min_dist_time = start_time
+
     while time.time() - start_time < timeout:
         with nav_arrived_lock:
             if nav_arrived:
@@ -649,6 +683,16 @@ def wait_for_arrival(target_name, timeout=NAV_TIMEOUT):
             elapsed = time.time() - start_time
             print(f"   ⏱ {elapsed:.0f}s | 剩余距离: {dist:.2f}m | 当前位置: ({cx:.3f}, {cy:.3f})")
             last_log_time = time.time()
+
+            # 记录最小距离及其时间
+            if dist < min_dist:
+                min_dist = dist
+                min_dist_time = time.time()
+
+            # 卡住检测：已经在 0.15m 以内，且连续 4 秒距离无明显减少
+            if min_dist <= 0.15 and (time.time() - min_dist_time) > 4.0:
+                print(f"⏹ 小车已在目标附近稳定 ({min_dist:.2f}m <= 0.15m)，视为精确到达")
+                return True
 
         time.sleep(0.5)
 
@@ -735,7 +779,7 @@ def main():
     odom_node = OdomMonitorNode(
         target_x=TARGET_LOCATIONS["A_point"]["x"],
         target_y=TARGET_LOCATIONS["A_point"]["y"],
-        arrival_threshold=0.08
+        arrival_threshold=0.10
     )
 
     # ROS2 spin 线程 (同时驱动 odom_node 和 arm_controller 两个节点的订阅)

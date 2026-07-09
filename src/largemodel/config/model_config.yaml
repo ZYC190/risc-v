@@ -1,5 +1,5 @@
 
 tongyi_base_url: "https://dashscope.aliyuncs.com/compatible-mode/v1"  # 阿里云示例
-tongyi_app_id : 'f69798faa34a46b6847bffd057f324d8'                                  #填写自己的app_id
-tongyi_api_key: "YOUR_TONGYI_API_KEY"
+tongyi_app_id : "${TONGYI_APP_ID}"                                  # 从环境变量或本地 .robot_secrets 提供
+tongyi_api_key: "${TONGYI_API_KEY}"
 multimodel : "qwen3-vl-plus"

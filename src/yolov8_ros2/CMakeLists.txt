@@ -54,6 +54,7 @@ link_directories(${ONNXRUNTIME_LIB_DIR})
 # 💥 修改点 2：将可执行文件命名为 yolov8_node，方便在 ROS 2 里调用
 set(NODE_NAME "yolov8_node")
 add_executable(${NODE_NAME} ${SRCS} ${OPENCL_SOURCES})
+target_compile_options(${NODE_NAME} PRIVATE -O3 -march=rv64gcv -mabi=lp64d)
 
 # ==========================================================
 # 💥 (完全保留您的配置)：强制优先包含手工版 OpenCV 的头文件路径

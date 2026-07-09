@@ -23,6 +23,8 @@ import time
 import rclpy
 from rclpy.node import Node
 from geometry_msgs.msg import Twist
+from sensor_msgs.msg import JointState
+from std_msgs.msg import String
 import paho.mqtt.client as mqtt
 
 
@@ -38,6 +40,7 @@ class MqttToRos2Bridge(Node):
         self.mqtt_port = 1883
         self.mqtt_topic = "phone/cmd_vel"
         self.mqtt_voice_topic = "phone/voice_text"  # 🎤 语音识别文字
+        self.mqtt_arm_topic = "phone/arm_cmd"  # 机械臂手柄控制
 
         # 超时断连刹车时间（秒）
         self.timeout = 0.5
@@ -51,7 +54,19 @@ class MqttToRos2Bridge(Node):
             '/cmd_vel',
             10
         )
+        self.arm_teleop_pub = self.create_publisher(
+            JointState,
+            'arm_teleop',
+            10
+        )
+        self.arm_cmd_pub = self.create_publisher(
+            String,
+            '/arm_cmd',
+            10
+        )
         self.get_logger().info("📡 ROS 2 Publisher: /cmd_vel 已就绪")
+        self.get_logger().info("🦾 ROS 2 Publisher: arm_teleop 已就绪")
+        self.get_logger().info("🦾 ROS 2 Publisher: /arm_cmd 已就绪")
 
         # ==================== MQTT 客户端 ====================
         self.mqtt_client = mqtt.Client(
@@ -86,8 +101,10 @@ class MqttToRos2Bridge(Node):
             )
             client.subscribe(self.mqtt_topic)
             client.subscribe(self.mqtt_voice_topic)  # 🎤 语音话题
+            client.subscribe(self.mqtt_arm_topic)  # 🦾 机械臂话题
             self.get_logger().info(f"✅ 已订阅 MQTT 话题: {self.mqtt_topic}")
             self.get_logger().info(f"✅ 已订阅语音话题: {self.mqtt_voice_topic}")
+            self.get_logger().info(f"✅ 已订阅机械臂话题: {self.mqtt_arm_topic}")
         else:
             self.get_logger().error(
                 f"❌ MQTT 连接失败，返回码: {reason_code}"
@@ -152,6 +169,68 @@ class MqttToRos2Bridge(Node):
                     self.get_logger().warning(f"⚠️ 转发失败: {e}")
             else:
                 self.get_logger().warning(f"⚠️ 语音消息为空 ({enc}): {payload_str[:100]}")
+            return
+
+        # 🦾 机械臂控制消息
+        if msg.topic == self.mqtt_arm_topic:
+            raw_cmd = payload_str.strip().upper()
+            if raw_cmd in {"GRAB_BOTTLE", "GRAB", "SCAN", "RESET", "STOP", "RELEASE", "OPEN", "OPEN_GRIPPER", "CLOSE", "CLOSE_GRIPPER"}:
+                ros_msg = String()
+                if raw_cmd in {"OPEN", "OPEN_GRIPPER"}:
+                    ros_msg.data = "RELEASE"
+                elif raw_cmd == "CLOSE_GRIPPER":
+                    ros_msg.data = "CLOSE"
+                else:
+                    ros_msg.data = raw_cmd
+                self.arm_cmd_pub.publish(ros_msg)
+                self.get_logger().info(f"🦾 MQTT → /arm_cmd | {ros_msg.data}")
+                return
+
+            try:
+                data = json.loads(payload_str)
+                cmd_type = str(data.get("type", "")).strip().lower()
+                if cmd_type in {"grab_bottle", "vision_grab", "auto_grab"}:
+                    ros_msg = String()
+                    ros_msg.data = "GRAB_BOTTLE"
+                    self.arm_cmd_pub.publish(ros_msg)
+                    self.get_logger().info("🦾 MQTT JSON → /arm_cmd | GRAB_BOTTLE")
+                    return
+                if cmd_type == "stop":
+                    ros_msg = String()
+                    ros_msg.data = "STOP"
+                    self.arm_cmd_pub.publish(ros_msg)
+                    self.get_logger().info("🦾 MQTT JSON → /arm_cmd | STOP")
+                    return
+                if cmd_type in {"release", "open", "open_gripper", "gripper_open"}:
+                    ros_msg = String()
+                    ros_msg.data = "RELEASE"
+                    self.arm_cmd_pub.publish(ros_msg)
+                    self.get_logger().info("🦾 MQTT JSON → /arm_cmd | RELEASE")
+                    return
+                if cmd_type in {"close", "close_gripper", "gripper_close"}:
+                    ros_msg = String()
+                    ros_msg.data = "CLOSE"
+                    self.arm_cmd_pub.publish(ros_msg)
+                    self.get_logger().info("🦾 MQTT JSON → /arm_cmd | CLOSE")
+                    return
+
+                angles = data.get("angles", [])
+                if not isinstance(angles, list) or len(angles) < 6:
+                    self.get_logger().warning(f"⚠️ 机械臂角度数据不足: {payload_str}")
+                    return
+
+                joint_msg = JointState()
+                joint_msg.header.stamp = self.get_clock().now().to_msg()
+                joint_msg.name = [f"joint_{i}" for i in range(1, 7)]
+                joint_msg.position = [float(v) for v in angles[:6]]
+                self.arm_teleop_pub.publish(joint_msg)
+
+                self.get_logger().info(
+                    "🦾 MQTT → arm_teleop | "
+                    + ", ".join(f"J{i+1}:{joint_msg.position[i]:.2f}" for i in range(6))
+                )
+            except Exception as e:
+                self.get_logger().warning(f"⚠️ 机械臂 MQTT 解析失败: {payload_str} | {e}")
             return
 
         # 🕹️ 速度指令消息

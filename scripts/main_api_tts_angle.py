@@ -34,13 +34,32 @@ import speech_recognition as sr
 from aip import AipSpeech
 
 # ==========================================
-# ⚠️ API 密钥配置
+# API 密钥配置：优先读取环境变量；也可在仓库根目录创建 .robot_secrets
 # ==========================================
-DEEPSEEK_API_KEY = "YOUR_DEEPSEEK_API_KEY"
-BAIDU_APP_ID = "YOUR_BAIDU_APP_ID"
-BAIDU_API_KEY = "YOUR_BAIDU_API_KEY"
-BAIDU_SECRET_KEY = "YOUR_BAIDU_SECRET_KEY"
-GAODE_API_KEY = "YOUR_GAODE_API_KEY"
+def _load_local_secrets():
+    candidates = [
+        os.path.expanduser("~/.robot_secrets"),
+        os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".robot_secrets")),
+    ]
+    for path in candidates:
+        if not os.path.exists(path):
+            continue
+        with open(path, "r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                key, value = line.split("=", 1)
+                os.environ.setdefault(key.strip(), value.strip().strip('"').strip("'"))
+
+
+_load_local_secrets()
+
+DEEPSEEK_API_KEY = os.environ.get("DEEPSEEK_API_KEY", "")
+BAIDU_APP_ID = os.environ.get("BAIDU_APP_ID", "")
+BAIDU_API_KEY = os.environ.get("BAIDU_API_KEY", "")
+BAIDU_SECRET_KEY = os.environ.get("BAIDU_SECRET_KEY", "")
+GAODE_API_KEY = os.environ.get("GAODE_API_KEY", "")
 CITY_CODE = "500000"
 # ==========================================
 

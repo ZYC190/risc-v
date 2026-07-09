@@ -10,6 +10,28 @@ from openai import OpenAI
 import base64
 
 
+def _load_local_secrets():
+    candidates = [
+        os.path.expanduser("~/.robot_secrets"),
+        os.path.abspath(
+            os.path.join(os.path.dirname(__file__), "..", "..", "..", ".robot_secrets")
+        ),
+    ]
+    for path in candidates:
+        if not os.path.exists(path):
+            continue
+        with open(path, "r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                key, value = line.split("=", 1)
+                os.environ.setdefault(key.strip(), value.strip().strip('"').strip("'"))
+
+
+_load_local_secrets()
+
+
 additional_colors = [colorname for (colorname, colorcode) in ImageColor.colormap.items()]
 
 def decode_json_points(text: str):
@@ -204,9 +226,7 @@ def encode_image(image_path):
 def inference_with_api(prompt, sys_prompt="You are a helpful assistant.", model_id="qwen3-vl-plus",
                        min_pixels=4 * 32 * 32, max_pixels=2560 * 32 * 32):
     client = OpenAI(
-        # 若没有配置环境变量，请用阿里云百炼API Key将下行替换为：api_key="sk-xxx",
-        # api_key=os.getenv("api_key"),
-        api_key="YOUR_TONGYI_API_KEY",
+        api_key=os.environ.get("TONGYI_API_KEY", ""),
         base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
     )
     local_img = "image.png" 
@@ -260,6 +280,4 @@ if __name__ == "__main__":
 
     # 2. 本地画图
     run_object_detection_local(local_img, response)
-
-
 

@@ -2,9 +2,12 @@
 #include <iostream>
 #include <chrono>
 #include <vector>
+#include <cstdio>
 #include <algorithm> // 用于中值排序
 #include <cmath>     // 引入数学库处理 isinf
+#include <iomanip>
 #include "yolov8.h"
+#include "rvv_stereo_opt.h"
 
 // 🟢 ROS 2 核心组件
 #include "rclcpp/rclcpp.hpp"
@@ -24,9 +27,12 @@ int main(int argc, char** argv) {
     auto point_pub = node->create_publisher<geometry_msgs::msg::PointStamped>("/target_point", 10);
     auto image_pub = node->create_publisher<sensor_msgs::msg::Image>("/yolov8/debug_image", 10);
 
-    cout << "\n==========================================" << endl;
-    cout << "  🚀 MUSE Pi Pro: 真实狙击雷达 (ROS 2 联动作战版) " << endl;
-    cout << "==========================================\n" << endl;
+    cout << "\n==================================================" << endl;
+    cout << "  K1 MUSE Pi Pro 双目视觉识别节点（ROS2 联动版）" << endl;
+    cout << "==================================================" << endl;
+    cout << "【题目一创新展示】RVV 加速双目视觉数据处理："
+         << (stereo_rvv::RvvAvailable() ? "已启用" : "未启用") << endl;
+    cout << "【说明】终端将每连续 30 帧统计一次平均耗时，便于拍摄对比。" << endl << endl;
 
     // 释放全部 8 核算力
     cv::setNumThreads(8);
@@ -63,7 +69,7 @@ int main(int argc, char** argv) {
     );
 
 // ✅ 改成这样（绝对坐标，精准定位）：
-string modelPath = "/home/zyc/robot2/src/yolov8_ros2/model/best.q.onnx";    cout << "♨️ 正在唤醒 RVV 矢量加速 AI 引擎 (" << modelPath << ")..." << endl;
+string modelPath = "/home/zyc/robot2/src/yolov8_ros2/model/best.q.onnx";    cout << "【模型加载】正在加载 YOLOv8 目标识别模型：" << modelPath << endl;
     Mat dummy = Mat::zeros(240, 320, CV_8UC3);
     Yolov8_Fast_GetBoxes(dummy, modelPath); 
 
@@ -76,11 +82,21 @@ string modelPath = "/home/zyc/robot2/src/yolov8_ros2/model/best.q.onnx";    cout
     cap.set(CAP_PROP_FPS, 30); 
 
     for(int i = 0; i < 5; i++) { cap.grab(); }
-    cout << "✅ 动态 ROI 狙击模式启动！系统已接入 ROS 2 网络。" << endl;
+    cout << "【系统状态】双目相机、YOLOv8、SGBM 深度估计已启动，系统已接入 ROS2 网络。" << endl;
 
     Mat frame, left_gray, right_gray, left_small, right_small, rect_L, rect_R;
     Mat rect_L_color;
     int frame_count = 0;
+    const string phone_raw_tmp = "/tmp/yolov8_raw_latest.tmp.jpg";
+    const string phone_raw_path = "/tmp/yolov8_raw_latest.jpg";
+    const string phone_debug_tmp = "/tmp/yolov8_debug_latest.tmp.jpg";
+    const string phone_debug_path = "/tmp/yolov8_debug_latest.jpg";
+    vector<int> phone_jpeg_params = {IMWRITE_JPEG_QUALITY, 82};
+    int rvv_window_count = 0;
+    double rvv_scalar_sum = 0.0;
+    double rvv_vector_sum = 0.0;
+    int rvv_active_pixels = 0;
+    int rvv_mismatch_pixels = 0;
     auto prev_time = chrono::high_resolution_clock::now();
 
     // 🟢 核心改动：把 while(true) 替换为 ROS 2 的存活状态判定
@@ -103,6 +119,49 @@ string modelPath = "/home/zyc/robot2/src/yolov8_ros2/model/best.q.onnx";    cout
         remap(right_small, rect_R, map2x_small, map2y_small, INTER_NEAREST);
         cvtColor(rect_L, rect_L_color, COLOR_GRAY2BGR); 
 
+        Mat raw_for_phone = rect_L_color.clone();
+        if (frame_count % 3 == 0) {
+            try {
+                imwrite(phone_raw_tmp, raw_for_phone, phone_jpeg_params);
+                std::rename(phone_raw_tmp.c_str(), phone_raw_path.c_str());
+            } catch (...) {
+            }
+        }
+
+        auto rvv_report = stereo_rvv::BenchmarkStereoPreprocess(rect_L, rect_R, 1, 18);
+        rvv_window_count++;
+        rvv_scalar_sum += rvv_report.scalar_ms;
+        rvv_vector_sum += rvv_report.rvv_ms;
+        rvv_active_pixels = rvv_report.active_pixels;
+        rvv_mismatch_pixels += rvv_report.mismatch_pixels;
+
+        if (rvv_window_count >= 30) {
+            double scalar_avg = rvv_scalar_sum / rvv_window_count;
+            double rvv_avg = rvv_vector_sum / rvv_window_count;
+            double speedup = (rvv_avg > 0.0) ? scalar_avg / rvv_avg : 0.0;
+
+            cout << fixed << setprecision(4);
+            cout << "\n\n========== 【RVV 双目相机数据处理优化展示】 ==========" << endl;
+            cout << "【统计方式】连续 " << rvv_window_count << " 帧实时统计平均耗时" << endl;
+            cout << "【输入画面】双目原始画面 1280x480，左目/右目各 640x480" << endl;
+            cout << "【处理画面】校正后双目灰度图 " << rect_L.cols << "x" << rect_L.rows
+                 << "，像素数量 " << rvv_report.pixels << endl;
+            cout << "【处理任务】左右图像像素差计算 + 阈值提取，用于目标区域和深度计算前的数据准备" << endl;
+            cout << "【普通标量循环】平均耗时：" << scalar_avg << " ms / 帧" << endl;
+            cout << "【RVV 向量优化】平均耗时：" << rvv_avg << " ms / 帧" << endl;
+            cout << "【加速效果】RVV 相比普通标量约提升：" << speedup << " 倍" << endl;
+            cout << "【结果校验】两种算法输出不一致像素数：" << rvv_mismatch_pixels
+                 << "（0 表示结果一致）" << endl;
+            cout << "【有效像素】当前帧提取到的变化/候选像素：" << rvv_active_pixels << endl;
+            cout << "【对应题目】复杂信号处理 + 程序优化 + RISC-V RVV 向量扩展应用" << endl;
+            cout << "====================================================\n" << endl;
+
+            rvv_window_count = 0;
+            rvv_scalar_sum = 0.0;
+            rvv_vector_sum = 0.0;
+            rvv_mismatch_pixels = 0;
+        }
+
         std::vector<Object> detected_targets = Yolov8_Fast_GetBoxes(rect_L_color, modelPath);
 
         int min_y = 240, max_y = 0;
@@ -121,6 +180,9 @@ string modelPath = "/home/zyc/robot2/src/yolov8_ros2/model/best.q.onnx";    cout
         best_target_msg.header.frame_id = "camera_color_optical_frame";
         bool has_target_to_pub = false;
         float highest_score = 0.0f;
+        int best_cx = -1;
+        int best_cy = -1;
+        double best_depth_m = 0.0;
 
         if (!valid_targets.empty()) {
             min_y = max(0, min_y - 20);
@@ -188,6 +250,9 @@ string modelPath = "/home/zyc/robot2/src/yolov8_ros2/model/best.q.onnx";    cout
                         best_target_msg.point.x = real_x / 1000.0;
                         best_target_msg.point.y = real_y / 1000.0;
                         best_target_msg.point.z = Z / 1000.0;
+                        best_cx = box_cx;
+                        best_cy = box_cy;
+                        best_depth_m = Z / 1000.0;
                         has_target_to_pub = true;
                     }
                 } else {
@@ -201,6 +266,13 @@ string modelPath = "/home/zyc/robot2/src/yolov8_ros2/model/best.q.onnx";    cout
         if (has_target_to_pub) {
             best_target_msg.header.stamp = node->now();
             point_pub->publish(best_target_msg);
+            if (frame_count % 15 == 0) {
+                cout << fixed << setprecision(3);
+                cout << "\n【目标定位】中心点=(" << best_cx
+                     << ", " << best_cy
+                     << ")，深度=" << best_depth_m << " m"
+                     << "，已发布到 ROS2 话题 /target_point，供机械臂抓取使用。" << endl;
+            }
         }
 
         auto curr_time = chrono::high_resolution_clock::now();
@@ -209,12 +281,17 @@ string modelPath = "/home/zyc/robot2/src/yolov8_ros2/model/best.q.onnx";    cout
         prev_time = curr_time;
 
         if (frame_count > 2) {
-             printf("\r[ROS2 雷达: %5.1f FPS] 锁定目标数: %lu        ", fps, valid_targets.size()); 
+             printf("\r【ROS2视觉节点】实时帧率: %5.1f FPS | 检测目标数: %lu        ", fps, valid_targets.size()); 
              fflush(stdout); 
         }
 
         if (frame_count % 2 == 0) {
             putText(rect_L_color, "FPS: " + to_string((int)fps), Point(10, 20), FONT_HERSHEY_SIMPLEX, 0.5, Scalar(0, 255, 0), 2);
+            try {
+                imwrite(phone_debug_tmp, rect_L_color, phone_jpeg_params);
+                std::rename(phone_debug_tmp.c_str(), phone_debug_path.c_str());
+            } catch (...) {
+            }
             
             // 🟢 通过 ROS 2 广播实时画面图像 (用 rqt_image_view 可以远程观看)
             sensor_msgs::msg::Image::SharedPtr img_msg = cv_bridge::CvImage(std_msgs::msg::Header(), "bgr8", rect_L_color).toImageMsg();
