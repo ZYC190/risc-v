@@ -32,6 +32,8 @@ def generate_launch_description():
     # Get the launch directory
     bringup_dir = get_package_share_directory('nav2_bringup')
     launch_dir = os.path.join(bringup_dir, 'launch')
+    wheeltec_launch_dir = os.path.join(
+        get_package_share_directory('wheeltec_nav2'), 'launch')
 
     # Create the launch configuration variables
     namespace = LaunchConfiguration('namespace')
@@ -160,7 +162,8 @@ def generate_launch_description():
                               'container_name': 'nav2_container'}.items()),
 
         IncludeLaunchDescription(
-            PythonLaunchDescriptionSource(os.path.join(launch_dir, 'navigation_launch.py')),
+            PythonLaunchDescriptionSource(os.path.join(
+                wheeltec_launch_dir, 'navigation_launch_competition.py')),
             launch_arguments={'namespace': namespace,
                               'use_sim_time': use_sim_time,
                               'autostart': autostart,

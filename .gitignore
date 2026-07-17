@@ -1,47 +1,50 @@
-# ROS 2 工作空间编译产物 (绝对不能传！)
+# ROS 2 build products
 build/
 install/
 log/
+src/build/
+src/install/
+src/log/
 
-# Python 缓存文件
+# Runtime logs and caches
+*.log
 __pycache__/
 *.pyc
 *.pyo
 *.pyd
-
-# C++ 编译生成的临时文件
 *.o
 *.so
 *.a
+.dart_tool/
+.gradle/
 
-# IDE 配置文件夹 (比如 VSCode 的本地配置)
+# Local IDE and OS files
 .vscode/
-
-# 操作系统自动生成的垃圾文件
+.idea/
+*.iml
 .DS_Store
 
-# Local secrets / backups (never upload)
+# Secrets, credentials and local machine configuration
 .env
+.env.*
 .robot_secrets
+local.properties
+*.pem
+*.key
+*.p12
+*.jks
+*.keystore
+*credential*
+*credentials*
 *.bak
 *.bak_*
 *.before_*
 *.backup
 *.orig
 
+# Large third-party SDKs excluded from this source backup
 src/bianyi/opencv/
-# ROS 2 外层运行环境
-build/
-install/
-log/
-
-# src 内部的第三方巨无霸 SDK 与模型 (禁止上传)
 src/wheeltec_robot_urdf/
 src/bianyi/
 src/wheeltec_radar/
 src/wheeltec_mic_aiui/
-
-# src 里不小心生成的误操作垃圾
-src/build/
-src/install/
-src/log/

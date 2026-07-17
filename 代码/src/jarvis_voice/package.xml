@@ -1,0 +1,21 @@
+<?xml version="1.0"?>
+<package format="3">
+  <name>jarvis_voice</name>
+  <version>1.0.0</version>
+  <description>ROS2 voice interaction, source localization and home robot dialogue node.</description>
+  <maintainer email="ZYC190@users.noreply.github.com">ZYC190</maintainer>
+  <license>MIT</license>
+
+  <buildtool_depend>ament_cmake</buildtool_depend>
+
+  <exec_depend>rclpy</exec_depend>
+  <exec_depend>geometry_msgs</exec_depend>
+  <exec_depend>nav_msgs</exec_depend>
+  <exec_depend>sensor_msgs</exec_depend>
+  <exec_depend>std_msgs</exec_depend>
+  <exec_depend>tf_transformations</exec_depend>
+
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+</package>

@@ -1,0 +1,35 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>home_patrol</name>
+  <version>1.0.0</version>
+  <description>Room-by-room Nav2 patrol controller for the home service robot.</description>
+  <maintainer email="zyc@example.com">zyc</maintainer>
+  <license>Apache-2.0</license>
+
+  <depend>rclpy</depend>
+  <depend>ament_index_python</depend>
+  <depend>geometry_msgs</depend>
+  <depend>nav2_msgs</depend>
+  <depend>action_msgs</depend>
+  <depend>std_msgs</depend>
+  <depend>sensor_msgs</depend>
+  <depend>nav_msgs</depend>
+  <exec_depend>python3-yaml</exec_depend>
+  <exec_depend>python3-pil</exec_depend>
+  <exec_depend>ros2launch</exec_depend>
+  <exec_depend>robot_mqtt_bridge</exec_depend>
+  <exec_depend>turn_on_wheeltec_robot</exec_depend>
+  <exec_depend>wheeltec_nav2</exec_depend>
+  <exec_depend>jarvis_voice</exec_depend>
+  <exec_depend>jobot_mic</exec_depend>
+  <exec_depend>wheeltec_arm_control</exec_depend>
+  <exec_depend>yolov8_ros2</exec_depend>
+  <exec_depend>wheeltec_ui_dashboard</exec_depend>
+
+  <test_depend>python3-pytest</test_depend>
+
+  <export>
+    <build_type>ament_python</build_type>
+  </export>
+</package>

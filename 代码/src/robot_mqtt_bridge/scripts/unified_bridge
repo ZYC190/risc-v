@@ -1,0 +1,3 @@
+#!/bin/sh
+# paho-mqtt is installed in demo-env; ROS2 paths are inherited from setup.bash.
+exec /home/zyc/demo-env/bin/python3 "$(dirname "$0")/unified_bridge.py" "$@"

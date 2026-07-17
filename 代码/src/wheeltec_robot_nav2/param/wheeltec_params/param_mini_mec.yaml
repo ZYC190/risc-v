@@ -1,42 +1,42 @@
 amcl:
   ros__parameters:
     use_sim_time: False
-    alpha1: 0.4   #里程计的旋转估计中来自旋转的预期过程噪声
+    alpha1: 0.25  #降低过度扩散，同时保留麦克纳姆轮打滑余量
     alpha2: 0.2   #里程计的旋转估计中来自平移的预期过程噪声
     alpha3: 0.2  #里程计的翻译估计中来自translation的预期过程噪声
-    alpha4: 0.4  #里程计的平移估计中因旋转而产生的预期过程噪声
+    alpha4: 0.25 #降低转弯后的粒子云漂移
     alpha5: 0.2  #仅适用于 Omni 型号：translation噪音
-    base_frame_id: "base_footprint" #机器人底座框架 
-    introspection_mode: "disabled" #启用调试模式，这将发布额外的调试信息 
+    base_frame_id: "base_footprint" #机器人底座框架
+    introspection_mode: "disabled" #启用调试模式，这将发布额外的调试信息
     beam_skip_distance: 0.5         #忽略似然场模型中大多数粒子不同意的光束。考虑跳过的最大距离（米）
     beam_skip_error_threshold: 0.9  #由于收敛性不好，未匹配地图后强制进行完全更新的光束百分比
     beam_skip_threshold: 0.3        #需要跳过的光束的百分比。
-    do_beamskip: false              #是否在似然场模型中进行波束跳跃
+    do_beamskip: true               #跳过与地图明显不一致的动态物体/车体反射，提高定位稳定性
     global_frame_id: "map"          #定位系统发布的坐标框架的名称
     lambda_short: 0.1               #模型 z_short 部分的指数衰减参数
     laser_likelihood_max_dist: 2.0  #在地图上进行障碍物膨胀的最大距离，用于似然场模型
-    laser_max_range: 100.0          #要考虑的最大扫描范围，-1.0 将导致使用激光报告的最大范围
-    laser_min_range: -1.0           #要考虑的最小扫描范围，-1.0 将导致使用激光报告的最小范围
-    laser_model_type: "likelihood_field" #使用哪种模型，
+    laser_max_range: 8.0            #家庭室内只使用8米内有效回波，降低远距离噪声和计算量
+    laser_min_range: 0.15           #与雷达上报的range_min一致，忽略机身近距自反射
+    laser_model_type: "likelihood_field_prob" #启用带波束跳过的似然场模型
     #beam、likelihood_field 或 unlikely_field_prob。与 unlikely_field 相同，但如果启用，则包含 beamskip 功能
-    max_beams: 60                   #更新过滤器时每次扫描要使用多少个均匀分布的光束。
-    max_particles: 2000             #允许的最大粒子数
-    min_particles: 500              #允许的最小粒子数
+    max_beams: 100                  #增加有效匹配光束，减少走动时定位跳到墙内
+    max_particles: 2500            #精度与板载启动时间之间的折中
+    min_particles: 600             #小地图保持足够粒子，避免定位跳变
     odom_frame_id: "odom_combined"  #使用哪个框架进行里程计
     pf_err: 0.05                    #粒子过滤器群体误差
     pf_z: 0.99                      #粒子过滤器群体密度
     recovery_alpha_fast: 0.0        #快速平均权重过滤器的指数衰减率，用于决定何时通过添加随机姿势进行恢复。
     recovery_alpha_slow: 0.0        #慢速平均权重过滤器的指数衰减率，用于决定何时通过添加随机姿势进行恢复。
-    resample_interval: 2            #重采样之前所需的过滤器更新次数
+    resample_interval: 1            #每次滤波更新后重采样，及时吸收激光匹配结果
     robot_model_type: "nav2_amcl::OmniMotionModel" #插件类的完全限定类型。
     #选项为“nav2_amcl::DifferentialMotionModel”和“nav2_amcl::OmniMotionModel”。
 
     save_pose_rate: 0.5             #将最后估计的姿势和协方差存储到参数服务器的最大速率（Hz）
-    sigma_hit: 0.2                 #模型的 z_hit 部分中使用的高斯模型的标准差
+    sigma_hit: 0.15                #收紧激光命中分布，提高静态家庭地图匹配精度
     tf_broadcast: true              #将其设置为 false 以防止 amcl 发布全局框架和里程计框架之间的变换
-    transform_tolerance: 1.0        #发布转换的容差
-    update_min_a: 0.2              #执行过滤器更新之前需要进行旋转运动。
-    update_min_d: 0.25             #执行过滤器更新之前需要进行平移运动
+    transform_tolerance: 0.5        #减少地图姿态显示的时间滞后
+    update_min_a: 0.025            #约1.4度即更新定位，减小转弯后误差
+    update_min_d: 0.025            #每移动2.5厘米更新定位，适合当前小尺寸地图
     z_hit: 0.7                      #模型的 z_hit 部分的混合权重，所有使用的 z 权重之和必须为 1。
     z_max: 0.001                    #模型的 z_max 部分的混合权重，所有使用的 z 权重之和必须为 1。
     z_rand: 0.059                   #模型的 z_rand 部分的混合权重，所有使用的 z 权重之和必须为 1。
@@ -55,6 +55,16 @@ amcl_map_client:
   ros__parameters:
     use_sim_time: False
 
+# 板端同时运行地图、控制、桥接等节点时，偶尔会有数秒调度抖动。
+# 默认 4 秒 bond 超时会误判服务死亡并关闭整套导航。
+lifecycle_manager_localization:
+  ros__parameters:
+    bond_timeout: 15.0
+
+lifecycle_manager_navigation:
+  ros__parameters:
+    bond_timeout: 15.0
+
 amcl_rclcpp_node:
   ros__parameters:
     use_sim_time: False
@@ -62,20 +72,20 @@ amcl_rclcpp_node:
 bt_navigator:
   ros__parameters:
     use_sim_time: False
-    transform_tolerance: 0.1 #变换容差
+    transform_tolerance: 0.3 #变换容差
     goal_reached_tol: 0.10 #接受姿势作为目标的容忍度(m)
     global_frame: map
     robot_base_frame: base_footprint
     odom_topic: /odom_combined
-    bt_loop_duration: 10        #BT 执行每次迭代的持续时间（以毫秒为单位
-    default_server_timeout: 20  #BT 操作节点等待操作服务器确认时的默认超时值（以毫秒为单位）
+    bt_loop_duration: 100       #板载运行使用10Hz BT，减少与控制器争抢CPU
+    default_server_timeout: 500 #BT 操作节点等待操作服务器确认时的默认超时值（以毫秒为单位）
     # 'default_nav_through_poses_bt_xml' and 'default_nav_to_pose_bt_xml' are use defaults:
     # nav2_bt_navigator/navigate_to_pose_w_replanning_and_recovery.xml
     # nav2_bt_navigator/navigate_through_poses_w_replanning_and_recovery.xml
     # They can be set here or via a RewrittenYaml remap from a parent launch file to Nav2.
     #plugin_lib_names: #行为树节点共享库列表，Humble后的版本默认包含所有NAV2 BT库，这里可以加入自定义BT节点
     error_code_names:
-    - compute_path_error_code 
+    - compute_path_error_code
     - follow_path_error_code
 
 # bt_navigator参数说明：https://docs.nav2.org/configuration/packages/configuring-bt-navigator.html?highlight=bt_navigator
@@ -87,7 +97,7 @@ bt_navigator_rclcpp_node:
 controller_server:
   ros__parameters:
     use_sim_time: False
-    controller_frequency: 20.0           #运行控制器的频率
+    controller_frequency: 8.0            #匹配板载算力，避免控制循环持续超时
     # min_x_velocity_threshold: 0.001      #最小 x 速度阈值
     # min_y_velocity_threshold: 0.5        #最小 y 速度阈值
     # min_theta_velocity_threshold: 0.001  #最小速度阈值
@@ -101,7 +111,7 @@ controller_server:
     progress_checker: #进度检查器
       plugin: "nav2_controller::SimpleProgressChecker"
       required_movement_radius: 0.02 #所需运动半径
-      movement_time_allowance: 10.0 #移动时间容差
+      movement_time_allowance: 15.0 #给狭窄区域的原地调整留出时间
     # Goal checker parameters
     #precise_goal_checker:
     #  plugin: "nav2_controller::SimpleGoalChecker"
@@ -111,10 +121,10 @@ controller_server:
     general_goal_checker: #目标检查器
       stateful: True
       plugin: "nav2_controller::SimpleGoalChecker"
-      xy_goal_tolerance: 0.18  #xy 目标容差
-      yaw_goal_tolerance: 0.25 #yaw目标容差
+      xy_goal_tolerance: 0.18  #提高家庭目标点的到达位置精度
+      yaw_goal_tolerance: 0.25 #约14度朝向误差，兼顾精度与可达性
     # DWB parameters
-    FollowPath: 
+    FollowPath:
       plugin: "nav2_rotation_shim_controller::RotationShimController" #旋转控制器
       primary_controller: "nav2_mppi_controller::MPPIController" #MPPI控制器
       angular_dist_threshold: 0.785
@@ -123,28 +133,28 @@ controller_server:
       max_angular_accel: 1.5
       simulate_ahead_time: 1.0
       rotate_to_goal_heading: True
-    
-      time_steps: 56    #候选轨迹中的时间步长（点）数
-      model_dt: 0.05    #每个时间步长的时间步长的长度dt（以秒为单位）是预测范围
-      batch_size: 2000  #在给定迭代中从当前最佳控制序列中随机采样的候选轨迹的数量
+
+      time_steps: 24    #与0.125秒步长组合，保持3秒预测范围
+      model_dt: 0.125   #与8Hz控制周期一致
+      batch_size: 500   #降低ARM板上的MPPI计算负载
       vx_std: 0.15       #Vx 的抽样标准差
-      vy_std: 0.2       #Vy 的抽样标准差
+      vy_std: 0.0       #导航禁用横移采样，避免地图斜移而实车主要前进
       wz_std: 0.4       #Wz（角速度）的抽样标准差
       vx_max: 0.28       #目标最大前进速度（米/秒）
       vx_min: -0.16      #目标最大反向速度（米/秒）
-      vy_max: 0.25       #如果使用Omni运动模型，目标最大横向速度（m/s）
+      vy_max: 0.0        #导航只允许先转向再前进；手机手动横移不受影响
       wz_max: 1.2       #最大旋转速度（弧度/秒）
       ax_max: 1.5
       ax_min: -1.5
-      ay_max: 1.5
+      ay_max: 0.0
       az_max: 1.5
       iteration_count: 1 #迭代次数
       prune_distance: 1.5 #路径上距离机器人最近点的距离（米）
       enforce_path_inversion: false
-      transform_tolerance: 0.1 #使用 TF（s）进行数据转换的时间容差
+      transform_tolerance: 0.3 #使用 TF（s）进行数据转换的时间容差
       temperature: 0.3 #根据成本选择轨迹，0表示使用成本最佳的控制，巨大的值将导致仅取所有轨迹的平均值而不考虑成本。
       gamma: 0.015 #平滑度（高）和低能耗（低）之间的权衡,保持默认值
-      motion_model: "Omni" #用于轨迹规划的所需运动模型。选项包括DiffDrive、Omni或Ackermann。
+      motion_model: "DiffDrive" #比赛导航采用先转向再前进，减少麦克纳姆横移打滑和定位偏差
       visualize: false #是否发布调试轨迹以供可视化。
       TrajectoryVisualizer: #轨迹可视化
         trajectory_step: 5 #轨迹之间的步骤可视化以对候选轨迹池进行下采样
@@ -154,9 +164,9 @@ controller_server:
       critics: ["ConstraintCritic", "ObstaclesCritic", "GoalCritic", "GoalAngleCritic", "PathAlignCritic", "PathFollowCritic", "PathAngleCritic", "PreferForwardCritic"] #评论插件
       ConstraintCritic: #修复超出设定的动态或运动学约束的轨迹
         enabled: true
-        cost_power: 1 
+        cost_power: 1
         cost_weight: 4.0  #权重参数
-      
+
       GoalAngleCritic: #当距离目标较近时，GoalAngleCritic会激励导航以达到目标姿势的角度
         enabled: true
         cost_power: 1
@@ -174,12 +184,12 @@ controller_server:
         cost_power: 1
         repulsion_weight: 0.8 #权重参数，通常优先选择成本较低的空间中的路线。（降低排斥力，让小车离障碍物更近）
         critical_weight: 30.0 #应用于临界碰撞的权重，用于collision_margin_distance防止近距离碰撞
-        consider_footprint: false #是否使用点成本（如果机器人是圆形的或者计算能力低）或计算 SE2 足迹成本
+        consider_footprint: true  #按真实矩形车体检查碰撞，避免机器人中心进入墙体后才停车
         collision_cost: 10000.0 #应用于轨迹中真实碰撞的成本。
         collision_margin_distance: 0.04 #碰撞边缘距离，缩小以允许更贴近障碍物（原0.1，建议0.03-0.05）
         near_goal_distance: 0.30 #靠近目标的距离（米）停止应用优先障碍物项，以允许机器人平稳地收敛到靠近障碍物的目标姿势
         cost_scaling_factor: 10.0 #增大成本缩放因子，让障碍物成本衰减更快（原5.0）
-        inflation_radius: 0.05  #膨胀半径，仅限Humble
+        inflation_radius: 0.18  #与代价地图一致，并大于车体内切半径
 
       PreferForwardCritic: #激励机器人前进，而不是后退
         enabled: true
@@ -223,10 +233,11 @@ controller_server_rclcpp_node:
 local_costmap:
   local_costmap:
     ros__parameters:
-      update_frequency: 5.0  #成本地图更新频率
-      publish_frequency: 2.0 #将成本图发布到话题的频率
-      global_frame: map      #全局框架
+      update_frequency: 4.0  #板载运行降低代价地图更新负载
+      publish_frequency: 1.0 #手机巡查不需要高频发布完整代价地图
+      global_frame: odom_combined #滚动局部地图使用连续里程计坐标，避免AMCL修正时整张局部地图跳动
       robot_base_frame: base_footprint #机器人底座框架
+      transform_tolerance: 0.5 #允许板载计算抖动时使用稍晚到达的TF
       use_sim_time: False  #仿真时间
       rolling_window: true #成本地图是否应随机器人基座框架滚动
       width: 3             #代价地图的宽度（m）
@@ -238,39 +249,40 @@ local_costmap:
       inflation_layer:                             #膨胀层参数
         plugin: "nav2_costmap_2d::InflationLayer"  #膨胀层插件。
         cost_scaling_factor: 3.0                   #成本缩放因子，决定障碍物成本随距离的递减速度。
-        inflation_radius: 0.05                     #膨胀半径
+        inflation_radius: 0.18                     #膨胀半径
       voxel_layer:
         plugin: "nav2_costmap_2d::VoxelLayer"      #体素层插件。
         enabled: True
+        footprint_clearing_enabled: True            #始终清除车体自身占用，避免把机器人困在障碍格中
         publish_voxel_map: True
         origin_z: 0.0                              #体素地图的起始Z坐标
         z_resolution: 0.05                         #体素地图的Z轴分辨率
         z_voxels: 16                               #体素地图的Z轴体素数量
         max_obstacle_height: 2.0                   #可检测障碍物的最大高度（米）
         mark_threshold: 0                          #标记体素的阈值
-        observation_sources: scan scan2                 #观测源
+        observation_sources: scan                       #当前仅/scan有发布者，避免订阅空的/scan2
         scan:
           topic: /scan
           max_obstacle_height: 2.0                  #可检测障碍物的最大高度（米）
           clearing: True                            #是否启用障碍物清除功能
           marking: True                             #是否启用障碍物标记功能
           data_type: "LaserScan"                    #数据类型
-          raytrace_max_range: 10.0                  #控制光线追踪从代价地图中清除障碍物的最大范围 
-          raytrace_min_range: 0.0                  #控制光线追踪从代价地图中清除障碍物的最大范围 
+          raytrace_max_range: 10.0                  #控制光线追踪从代价地图中清除障碍物的最大范围
+          raytrace_min_range: 0.0                  #控制光线追踪从代价地图中清除障碍物的最大范围
           obstacle_max_range: 2.5                   #控制代价地图上标记障碍物的最大范围
-          obstacle_min_range: 0.0                   #控制代价地图上标记障碍物的最小范围
+          obstacle_min_range: 0.15                  #忽略雷达有效量程内的机身自反射
         scan2:
           topic: /scan2
           max_obstacle_height: 2.0                  #可检测障碍物的最大高度（米）
           clearing: True                            #是否启用障碍物清除功能
           marking: True                             #是否启用障碍物标记功能
           data_type: "LaserScan"                    #数据类型
-          raytrace_max_range: 10.0                  #控制光线追踪从代价地图中清除障碍物的最大范围 
-          raytrace_min_range: 0.0                  #控制光线追踪从代价地图中清除障碍物的最大范围 
+          raytrace_max_range: 10.0                  #控制光线追踪从代价地图中清除障碍物的最大范围
+          raytrace_min_range: 0.0                  #控制光线追踪从代价地图中清除障碍物的最大范围
           obstacle_max_range: 2.5                   #控制代价地图上标记障碍物的最大范围
           obstacle_min_range: 0.0                   #控制代价地图上标记障碍物的最小范围
-          
-      always_send_full_costmap: True                 #是否每次更新时都发送完整的成本图，而不是更新
+
+      always_send_full_costmap: False                #只发送更新区域以降低CPU和带宽占用
   local_costmap_client:
     ros__parameters:
       use_sim_time: False
@@ -285,7 +297,8 @@ global_costmap:
       publish_frequency: 1.0            #将成本图发布到话题的频率
       global_frame: map                 #全局框架
       robot_base_frame: base_footprint  #机器人底座框架
-      use_sim_time: False               #仿真时间 
+      transform_tolerance: 0.5          #兼容雷达与TF约十几毫秒的时间差
+      use_sim_time: False               #仿真时间
       #robot_radius: 0.20                #机器人半径
       footprint: "[ [-0.1350, -0.1110], [-0.1350, 0.1110], [0.1350, 0.1110], [0.1350, -0.1110] ]"
       resolution: 0.05                  #全局地图1像素的分辨率，以米为单位
@@ -294,25 +307,26 @@ global_costmap:
       obstacle_layer:  #障碍层参数
         plugin: "nav2_costmap_2d::ObstacleLayer" #障碍层插件
         enabled: True
-        observation_sources: scan scan2                 #观测源
+        footprint_clearing_enabled: True            #动态障碍层不在机器人足迹内保留障碍
+        observation_sources: scan                   #当前仅/scan有发布者
         scan:
           topic: /scan
           max_obstacle_height: 2.0                 #可检测障碍物的最大高度（米）
           clearing: True                           #是否启用障碍物清除功能
           marking: True                            #是否启用障碍物标记功能
           data_type: "LaserScan"                   #数据类型
-          raytrace_max_range: 10.0                 #控制光线追踪从代价地图中清除障碍物的最大范围 
-          raytrace_min_range: 0.0                  #控制光线追踪从代价地图中清除障碍物的最大范围 
+          raytrace_max_range: 10.0                 #控制光线追踪从代价地图中清除障碍物的最大范围
+          raytrace_min_range: 0.0                  #控制光线追踪从代价地图中清除障碍物的最大范围
           obstacle_max_range: 2.5                  #控制代价地图上标记障碍物的最大范围
-          obstacle_min_range: 0.0                  #控制代价地图上标记障碍物的最小范围
+          obstacle_min_range: 0.15                 #忽略雷达有效量程内的机身自反射
         scan2:
           topic: /scan2
           max_obstacle_height: 2.0                 #可检测障碍物的最大高度（米）
           clearing: True                           #是否启用障碍物清除功能
           marking: True                            #是否启用障碍物标记功能
           data_type: "LaserScan"                   #数据类型
-          raytrace_max_range: 10.0                 #控制光线追踪从代价地图中清除障碍物的最大范围 
-          raytrace_min_range: 0.0                  #控制光线追踪从代价地图中清除障碍物的最大范围 
+          raytrace_max_range: 10.0                 #控制光线追踪从代价地图中清除障碍物的最大范围
+          raytrace_min_range: 0.0                  #控制光线追踪从代价地图中清除障碍物的最大范围
           obstacle_max_range: 2.5                  #控制代价地图上标记障碍物的最大范围
           obstacle_min_range: 0.0                  #控制代价地图上标记障碍物的最小范围
       static_layer: #静态层参数
@@ -321,8 +335,8 @@ global_costmap:
       inflation_layer: #膨胀层参数
         plugin: "nav2_costmap_2d::InflationLayer"  #膨胀层插件
         cost_scaling_factor: 10.0                   #成本缩放因子，决定障碍物成本随距离的递减速度。
-        inflation_radius: 0.05                     #膨胀半径
-      always_send_full_costmap: True               #是否每次更新时都发送完整的成本图，而不是更新
+        inflation_radius: 0.18                     #膨胀半径
+      always_send_full_costmap: False              #只发送更新区域以降低CPU和带宽占用
   global_costmap_client:
     ros__parameters:
       use_sim_time: False
@@ -363,7 +377,7 @@ planner_server_rclcpp_node:
 
 smoother_server:
   ros__parameters:
-    use_sim_time: True
+    use_sim_time: False
     smoother_plugins: ["simple_smoother"]
     simple_smoother:
       plugin: "nav2_smoother::SimpleSmoother"
@@ -371,7 +385,15 @@ smoother_server:
       max_its: 1000
       do_refinement: True
 
-# behavior_server:
+behavior_server:
+  ros__parameters:
+    use_sim_time: False
+    global_frame: odom_combined
+    robot_base_frame: base_footprint
+    transform_tolerance: 0.3
+    cycle_frequency: 10.0
+
+# behavior_server reference:
 #   ros__parameters:
 #     costmap_topic: local_costmap/costmap_raw           #用于在局部代价地图上进行碰撞检查的原始代价地图主题。
 #     footprint_topic: local_costmap/published_footprint #局部代价地图框架中的足迹主题。

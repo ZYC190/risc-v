@@ -1,0 +1,36 @@
+configured: false
+frame_id: map
+inspection_seconds: 3.0
+max_retries: 0
+continue_on_failure: true
+near_goal_tolerance: 0.3
+near_goal_hold_seconds: 2.5
+navigation_timeout_seconds: 90.0
+waypoints:
+- name: 客厅
+  recorded: true
+  x: 0.7953
+  y: -0.0178
+  yaw: 0.0
+  arrival_tolerance: 0.45
+- name: 厨房
+  recorded: true
+  x: 0.5244
+  y: 0.1324
+  yaw: -0.1642
+  arrival_tolerance: 0.45
+- name: 主卧
+  recorded: true
+  x: 0.8987
+  y: 1.519
+  yaw: 1.5638
+- name: 儿童房
+  recorded: true
+  x: -0.0067
+  y: -0.0567
+  yaw: 0.0464
+- name: 走廊
+  recorded: false
+  x: 0.0
+  y: 0.0
+  yaw: 0.0

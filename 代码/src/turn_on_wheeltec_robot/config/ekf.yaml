@@ -7,12 +7,12 @@ ekf_filter_node:
         frequency: 10.0  # 决定EKF每秒输出几次位置估计，这里表示1s输出20次。注意：需要考虑输入数据的频率(/odom,/imu_data_raw)
         sensor_timeout: 1.5  # 如果某个传感器超过这个时间没发消息，EKF 就不再用它的数据，只预测，不校正。可防止某个坏传感器卡住滤波器。
 
-        two_d_mode: true  
+        two_d_mode: true
         # 机器人是否在平面环境中运行，true表示将每次测量中的3D位姿变量置零
         # 表示机器人只在平面上运动，不关心上下(Z)的变化，也不关心 roll/pitch（倾斜）
         # 滤波器忽略 Z、roll、pitch 以及它们的速度和加速度，只用二维（X, Y, yaw）
 
-        transform_time_offset: 0.0  #输出TF时间偏移（未来几毫秒），某些系统需要这个。
+        transform_time_offset: 0.2  #向未来预发布200ms，补偿板端调度延迟，避免Nav2向未来外推失败。
         transform_timeout: 0.1  #TF查找超时时间。0表示立即取最新值
                             #如EKF等待odom → base_link的TF转换时，最多等0.1秒（100毫秒）去找TF，如果还没有就跳过这次
                             #如果设置太大系统可能等待太久，出现数据延迟
@@ -45,7 +45,7 @@ ekf_filter_node:
                        false, false, false]
                   # 位置          [x_pos, y_pos, z_pos,
                   # 姿态          roll, pitch, yaw,
-                  # 线速度         x_vel, y_vel, z_vel, 
+                  # 线速度         x_vel, y_vel, z_vel,
                   # 角速度         roll_vel, pitch_vel, yaw_vel,
                   # 加速度         x_accel, y_accel, z_accel]
 
@@ -69,7 +69,7 @@ ekf_filter_node:
                       false, false, false]
                     # 位置          [x_pos, y_pos, z_pos,
                     # 姿态          roll, pitch, yaw,
-                    # 线速度         x_vel, y_vel, z_vel, 
+                    # 线速度         x_vel, y_vel, z_vel,
                     # 角速度         roll_vel, pitch_vel, yaw_vel,
                     # 加速度         x_accel, y_accel, z_accel]
 
@@ -145,4 +145,3 @@ ekf_filter_node:
                                       0.0,    0.0,    0.0,    0.0,    0.0,    0.0,    0.0,    0.0,    0.0,    0.0,     0.0,     0.0,     1e-9, 0.0,    0.0,
                                       0.0,    0.0,    0.0,    0.0,    0.0,    0.0,    0.0,    0.0,    0.0,    0.0,     0.0,     0.0,     0.0,    1e-9, 0.0,
                                       0.0,    0.0,    0.0,    0.0,    0.0,    0.0,    0.0,    0.0,    0.0,    0.0,     0.0,     0.0,     0.0,    0.0,    1e-9]
-
