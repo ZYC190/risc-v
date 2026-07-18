@@ -21,9 +21,14 @@ def generate_launch_description():
     start_base = LaunchConfiguration("start_base")
     start_lidar = LaunchConfiguration("start_lidar")
     start_waypoint_cycle = LaunchConfiguration("start_waypoint_cycle")
+    lidar_type = LaunchConfiguration("lidar_type")
+    lidar_type_yaml = LaunchConfiguration("lidar_type_yaml")
 
     wheeltec_robot_dir = get_package_share_directory("turn_on_wheeltec_robot")
     wheeltec_launch_dir = os.path.join(wheeltec_robot_dir, "launch")
+    default_hardware_config = os.path.join(
+        wheeltec_robot_dir, "config", "wheeltec_param.yaml"
+    )
 
     wheeltec_nav_dir = get_package_share_directory("wheeltec_nav2")
     wheeltec_nav_launch_dir = os.path.join(wheeltec_nav_dir, "launch")
@@ -71,6 +76,16 @@ def generate_launch_description():
                 default_value="true",
                 description="Start the keyboard waypoint-cycle helper",
             ),
+            DeclareLaunchArgument(
+                "lidar_type",
+                default_value="",
+                description="Override lidar model from the hardware YAML",
+            ),
+            DeclareLaunchArgument(
+                "lidar_type_yaml",
+                default_value=default_hardware_config,
+                description="Robot and lidar hardware configuration YAML",
+            ),
             Node(
                 name="waypoint_cycle",
                 package="nav2_waypoint_cycle",
@@ -90,6 +105,10 @@ def generate_launch_description():
                 PythonLaunchDescriptionSource(
                     os.path.join(wheeltec_launch_dir, "wheeltec_lidar.launch.py")
                 ),
+                launch_arguments={
+                    "lidar_type": lidar_type,
+                    "lidar_type_yaml": lidar_type_yaml,
+                }.items(),
                 condition=IfCondition(start_lidar),
             ),
             IncludeLaunchDescription(

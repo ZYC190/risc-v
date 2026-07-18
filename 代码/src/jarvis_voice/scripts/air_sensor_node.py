@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import json
+import os
 import threading
 import time
 
@@ -12,6 +13,9 @@ import paho.mqtt.client as mqtt
 
 
 SERIAL_PORT = "/dev/air_sensor"
+SERIAL_FALLBACK_PORT = (
+    "/dev/serial/by-id/usb-1a86_USB_Serial-if00-port0"
+)
 BAUD_RATE = 9600
 MQTT_BROKER = "127.0.0.1"
 MQTT_PORT = 1883
@@ -20,6 +24,20 @@ PHONE_ENV_TOPIC = "home/environment/state"
 PHONE_ENV_REQUEST_TOPIC = "home/environment/request"
 PROBLEM_CONFIRM_FRAMES = 3
 LIVE_SAMPLE_MAX_AGE = 8.0
+
+
+def resolve_serial_port():
+    """Prefer the udev alias, with a stable CH340 by-id fallback.
+
+    The air sensor is the only 1a86:7523 CH340 on this robot.  The fallback
+    deliberately does not scan arbitrary ttyUSB devices, so it cannot select
+    the CP2102N lidar by mistake.
+    """
+    if os.path.exists(SERIAL_PORT):
+        return SERIAL_PORT
+    if os.path.exists(SERIAL_FALLBACK_PORT):
+        return SERIAL_FALLBACK_PORT
+    return SERIAL_PORT
 
 
 class AirSensorNode(Node):
@@ -61,7 +79,12 @@ class AirSensorNode(Node):
         except Exception as exc:
             self.get_logger().warn(f"手机预警 MQTT 连接失败: {exc}")
 
-        self.get_logger().info(f"环境传感器节点启动，正在连接 {SERIAL_PORT}...")
+        startup_port = resolve_serial_port()
+        if startup_port != SERIAL_PORT:
+            self.get_logger().warning(
+                f"{SERIAL_PORT} 不存在，已安全回退到空气传感器固定设备 {startup_port}"
+            )
+        self.get_logger().info(f"环境传感器节点启动，正在连接 {startup_port}...")
 
         self.read_thread = threading.Thread(target=self.read_serial_loop, daemon=True)
         self.read_thread.start()
@@ -414,15 +437,18 @@ class AirSensorNode(Node):
     def read_serial_loop(self):
         while rclpy.ok():
             ser = None
+            serial_port = resolve_serial_port()
             try:
                 ser = serial.Serial(
-                    SERIAL_PORT,
+                    serial_port,
                     BAUD_RATE,
                     timeout=1,
                     exclusive=True,
                 )
                 ser.reset_input_buffer()
-                self.get_logger().info("串口连接成功，开始广播空气质量数据...")
+                self.get_logger().info(
+                    f"串口 {serial_port} 连接成功，开始广播空气质量数据..."
+                )
 
                 while rclpy.ok():
                     try:

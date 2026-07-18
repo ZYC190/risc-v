@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.10)
 # 💥 修改点 1：包名统一改为刚才 package.xml 里声明的名字
-project(yolov8_ros2)
+project(yolov8_ros2) 
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_BUILD_TYPE RELEASE)
@@ -18,7 +18,7 @@ file(GLOB SRCS "*.cc" "*.cpp")
 # ==========================================================
 # 💥 (完全保留您的配置)：强行指定手工编译的满血版 OpenCV 路径
 # ==========================================================
-set(OpenCV_DIR "/usr/local/lib/cmake/opencv4")
+set(OpenCV_DIR "/usr/local/lib/cmake/opencv4") 
 find_package(OpenCV 4 REQUIRED)
 message(STATUS "OpenCV library status:")
 message(STATUS "    version: ${OpenCV_VERSION}")

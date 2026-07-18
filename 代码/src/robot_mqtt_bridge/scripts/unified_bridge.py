@@ -82,7 +82,9 @@ class UnifiedMqttBridge(Node):
         )
         self.cmd_vel_timeout = float(self.get_parameter("cmd_vel_timeout").value)
 
+        # 非导航模式直接控制底盘；巡查模式必须进入 Nav2 的平滑与防撞链。
         self.cmd_vel_pub = self.create_publisher(Twist, "/cmd_vel", 10)
+        self.nav_cmd_vel_pub = self.create_publisher(Twist, "/cmd_vel_nav", 10)
         self.arm_teleop_pub = self.create_publisher(JointState, "arm_teleop", 10)
         self.arm_cmd_pub = self.create_publisher(String, "/arm_cmd", 10)
         self.esp32_status_pub = self.create_publisher(String, "/esp32_status", 10)
@@ -111,6 +113,7 @@ class UnifiedMqttBridge(Node):
 
         self.last_cmd_vel_time = 0.0
         self.brake_sent = True
+        self.navigation_mode = False
         self.arm_offsets = {
             "x_offset": -0.07,
             "y_offset": -0.03,
@@ -208,9 +211,13 @@ class UnifiedMqttBridge(Node):
         twist.linear.x = linear_x
         twist.linear.y = linear_y
         twist.angular.z = angular_z
-        self.cmd_vel_pub.publish(twist)
+        self._publish_drive_twist(twist)
         self.last_cmd_vel_time = time.monotonic()
         self.brake_sent = False
+
+    def _publish_drive_twist(self, twist):
+        publisher = self.nav_cmd_vel_pub if self.navigation_mode else self.cmd_vel_pub
+        publisher.publish(twist)
 
     def _handle_voice(self, payload, encoding):
         try:
@@ -385,7 +392,16 @@ class UnifiedMqttBridge(Node):
             command = str(data.get("command", data.get("cmd", command))).upper()
         except (json.JSONDecodeError, AttributeError, TypeError):
             pass
-        if command not in {"START", "STOP", "STATUS"}:
+        if command not in {
+            "START",
+            "STOP",
+            "STATUS",
+            "RESET_ORIGIN",
+            "SET_MODE",
+            "MODE_INTERACTION",
+            "MODE_WATER",
+            "MODE_PATROL",
+        }:
             self.get_logger().warning(f"不支持的导航系统指令：{command}")
             return
         msg = String()
@@ -404,6 +420,22 @@ class UnifiedMqttBridge(Node):
             self.get_logger().error(f"巡查状态回传失败，返回码：{result.rc}")
 
     def _on_navigation_system_status(self, msg):
+        try:
+            status = json.loads(msg.data)
+            is_navigation_mode = str(status.get("mode", "")).lower() == "patrol"
+        except (json.JSONDecodeError, AttributeError, TypeError):
+            is_navigation_mode = self.navigation_mode
+
+        if is_navigation_mode != self.navigation_mode:
+            # 切换速度通道前同时清零旧、新通道，避免上一模式的速度残留。
+            self.cmd_vel_pub.publish(Twist())
+            self.nav_cmd_vel_pub.publish(Twist())
+            self.navigation_mode = is_navigation_mode
+            self.last_cmd_vel_time = 0.0
+            self.brake_sent = True
+            channel = "Nav2平滑防撞链" if is_navigation_mode else "底盘直连"
+            self.get_logger().info(f"手机速度通道已切换：{channel}")
+
         if not self.mqtt_connected:
             self.get_logger().warning("MQTT 尚未连接，导航系统状态未回传")
             return
@@ -476,7 +508,7 @@ class UnifiedMqttBridge(Node):
         if time.monotonic() - self.last_cmd_vel_time <= self.cmd_vel_timeout:
             return
 
-        self.cmd_vel_pub.publish(Twist())
+        self._publish_drive_twist(Twist())
         self.brake_sent = True
         self.get_logger().warning(
             f"手机遥控超过 {self.cmd_vel_timeout:.1f} 秒无数据，底盘已自动刹车"

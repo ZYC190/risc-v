@@ -1,0 +1,11 @@
+# RPLIDAR C1 via CP2102N.  Match this robot's physical USB serial only.
+KERNEL=="ttyUSB*", ATTRS{idVendor}=="10c4", ATTRS{idProduct}=="ea60", ATTRS{serial}=="ba668b80e173ef119897d08c8fcc3fa0", MODE:="0660", GROUP:="dialout", SYMLINK+="wheeltec_lidar"
+
+# Voice microphone controller.
+KERNEL=="ttyACM*", ATTRS{idVendor}=="1a86", ATTRS{idProduct}=="55d4", ATTRS{serial}=="0004", MODE:="0660", GROUP:="dialout", SYMLINK+="wheeltec_mic"
+
+# mini_mec chassis controller.
+KERNEL=="ttyACM*", ATTRS{idVendor}=="1a86", ATTRS{idProduct}=="55d4", ATTRS{serial}=="5B0B027499", MODE:="0660", GROUP:="dialout", SYMLINK+="wheeltec_controller"
+
+# Six-axis arm controller.
+KERNEL=="ttyACM*", ATTRS{idVendor}=="1a86", ATTRS{idProduct}=="55d4", ATTRS{serial}=="5897131275", MODE:="0660", GROUP:="dialout", SYMLINK+="wheeltec_arm"

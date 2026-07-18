@@ -1,80 +1,129 @@
 import os
-from  ament_index_python.packages import get_package_share_directory
+
+from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
-from launch.actions import SetEnvironmentVariable
-from launch_ros.actions import Node
-from launch.substitutions import LaunchConfiguration
-from launch.actions import DeclareLaunchArgument
+from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription
 from launch.conditions import IfCondition
-from launch.actions import (DeclareLaunchArgument, GroupAction,
-                            IncludeLaunchDescription, SetEnvironmentVariable)
 from launch.launch_description_sources import PythonLaunchDescriptionSource
+from launch.substitutions import LaunchConfiguration
+from launch_ros.actions import Node
+
 
 def generate_launch_description():
-    use_sim_time = LaunchConfiguration('use_sim_time', default='False')
-    
-    cartographer_config_dir = LaunchConfiguration('cartographer_config_dir', 
-        default=os.path.join(get_package_share_directory('wheeltec_cartographer') , 'config'))
-    configuration_basename = LaunchConfiguration('configuration_basename', default='cartographer.lua')
-    
-    resolution = LaunchConfiguration('resolution', default='0.05')
-    publish_period_sec = LaunchConfiguration('publish_period_sec', default='0.5')
- 
+    use_sim_time = LaunchConfiguration("use_sim_time")
+    start_base = LaunchConfiguration("start_base")
+    start_lidar = LaunchConfiguration("start_lidar")
+    lidar_type = LaunchConfiguration("lidar_type")
+    lidar_type_yaml = LaunchConfiguration("lidar_type_yaml")
+    cartographer_config_dir = LaunchConfiguration("cartographer_config_dir")
+    configuration_basename = LaunchConfiguration("configuration_basename")
+    resolution = LaunchConfiguration("resolution")
+    publish_period_sec = LaunchConfiguration("publish_period_sec")
 
-    bringup_dir = get_package_share_directory('turn_on_wheeltec_robot')
-    launch_dir = os.path.join(bringup_dir, 'launch')
-
-    wheeltec_robot = IncludeLaunchDescription(
-            PythonLaunchDescriptionSource(os.path.join(launch_dir, 'turn_on_wheeltec_robot.launch.py')),
-            launch_arguments={'carto_slam': 'true'}.items(),
+    robot_share = get_package_share_directory("turn_on_wheeltec_robot")
+    robot_launch_dir = os.path.join(robot_share, "launch")
+    default_hardware_config = os.path.join(
+        robot_share, "config", "wheeltec_param.yaml"
     )
-    wheeltec_lidar = IncludeLaunchDescription(
-            PythonLaunchDescriptionSource(os.path.join(launch_dir, 'wheeltec_lidar.launch.py')),
+    cartographer_share = get_package_share_directory("wheeltec_cartographer")
+
+    return LaunchDescription(
+        [
+            DeclareLaunchArgument(
+                "cartographer_config_dir",
+                default_value=os.path.join(cartographer_share, "config"),
+                description="Directory containing the Cartographer Lua file",
+            ),
+            DeclareLaunchArgument(
+                "configuration_basename",
+                default_value="cartographer.lua",
+                description="Cartographer Lua configuration filename",
+            ),
+            DeclareLaunchArgument(
+                "use_sim_time",
+                default_value="false",
+                description="Use simulation time",
+            ),
+            DeclareLaunchArgument(
+                "resolution",
+                default_value="0.05",
+                description="Occupancy grid cell resolution",
+            ),
+            DeclareLaunchArgument(
+                "publish_period_sec",
+                default_value="0.5",
+                description="Occupancy grid publish period",
+            ),
+            DeclareLaunchArgument(
+                "start_base",
+                default_value="true",
+                description="Start chassis and Cartographer odometry nodes",
+            ),
+            DeclareLaunchArgument(
+                "start_lidar",
+                default_value="true",
+                description="Start the configured lidar driver",
+            ),
+            DeclareLaunchArgument(
+                "lidar_type",
+                default_value="",
+                description="Override lidar model from the hardware YAML",
+            ),
+            DeclareLaunchArgument(
+                "lidar_type_yaml",
+                default_value=default_hardware_config,
+                description="Robot and lidar hardware configuration YAML",
+            ),
+            IncludeLaunchDescription(
+                PythonLaunchDescriptionSource(
+                    os.path.join(
+                        robot_launch_dir, "turn_on_wheeltec_robot.launch.py"
+                    )
+                ),
+                launch_arguments={"carto_slam": "true"}.items(),
+                condition=IfCondition(start_base),
+            ),
+            IncludeLaunchDescription(
+                PythonLaunchDescriptionSource(
+                    os.path.join(robot_launch_dir, "wheeltec_lidar.launch.py")
+                ),
+                launch_arguments={
+                    "lidar_type": lidar_type,
+                    "lidar_type_yaml": lidar_type_yaml,
+                }.items(),
+                condition=IfCondition(start_lidar),
+            ),
+            Node(
+                package="cartographer_ros",
+                executable="cartographer_node",
+                name="cartographer_node",
+                parameters=[{"use_sim_time": use_sim_time}],
+                arguments=[
+                    "-configuration_directory",
+                    cartographer_config_dir,
+                    "-configuration_basename",
+                    configuration_basename,
+                ],
+                remappings=[
+                    ("odom", "odom"),
+                    ("imu", "/mobile_base/sensors/imu_data"),
+                ],
+                output="screen",
+                prefix="taskset -c 4,5 ",
+            ),
+            Node(
+                package="cartographer_ros",
+                executable="cartographer_occupancy_grid_node",
+                name="occupancy_grid_node",
+                parameters=[{"use_sim_time": use_sim_time}],
+                arguments=[
+                    "-resolution",
+                    resolution,
+                    "-publish_period_sec",
+                    publish_period_sec,
+                ],
+                output="screen",
+                prefix="taskset -c 5 ",
+            ),
+        ]
     )
-    return LaunchDescription([
-    wheeltec_robot,wheeltec_lidar,
-
-        DeclareLaunchArgument(
-            'cartographer_config_dir',
-            default_value=cartographer_config_dir,
-            description='Full path to config file to load'),
-        DeclareLaunchArgument(
-            'configuration_basename',
-            default_value=configuration_basename,
-            description='Name of lua file for cartographer'),
-        DeclareLaunchArgument(
-            'use_sim_time',
-            default_value='false',
-            description='Use simulation (Gazebo) clock if true'),
-        DeclareLaunchArgument(
-            'resolution',
-            default_value=resolution,
-            description='Resolution of a grid cell in the published occupancy grid'),
-        DeclareLaunchArgument(
-            'publish_period_sec',
-            default_value=publish_period_sec,
-            description='OccupancyGrid publishing period'),
-
-        Node(
-            package='cartographer_ros',
-            executable='cartographer_node',
-            name='cartographer_node',
-            parameters=[{'use_sim_time': use_sim_time}],
-            arguments=[
-                '-configuration_directory', cartographer_config_dir,
-                '-configuration_basename', configuration_basename],
-            remappings=[('odom','odom'),
-            ('imu','/mobile_base/sensors/imu_data')],
-            prefix='taskset -c 4,5 '),
-
-        Node(
-            package='cartographer_ros',
-            executable='cartographer_occupancy_grid_node',
-            name='occupancy_grid_node',
-
-            parameters=[{'use_sim_time': use_sim_time}],
-            arguments=['-resolution', resolution, '-publish_period_sec', publish_period_sec],
-            prefix='taskset -c 5 '),
-            
- 
-    ])

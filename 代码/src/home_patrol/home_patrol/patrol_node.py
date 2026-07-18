@@ -65,16 +65,19 @@ class HomePatrolNode(Node):
         self.inspection_seconds = 3.0
         self.max_retries = 0
         self.continue_on_failure = True
-        self.near_goal_tolerance = 0.25
-        self.near_goal_hold_seconds = 3.0
+        self.near_goal_tolerance = 0.55
+        self.near_goal_hold_seconds = 1.0
         self.navigation_timeout_seconds = 60.0
+        self.stall_timeout_seconds = 15.0
         self.last_feedback_at = 0.0
         self.goal_started_at = 0.0
         self.best_position_distance = None
+        self.progress_anchor_position = None
         self.last_progress_at = 0.0
         self.near_goal_started_at = None
         self.near_goal_cancel_requested = False
         self.timeout_cancel_requested = False
+        self.timeout_failure_reason = ""
         self.checked_rooms = []
         self.failed_rooms = []
         self.global_costmap = None
@@ -204,13 +207,16 @@ class HomePatrolNode(Node):
         self.max_retries = max(0, int(config.get("max_retries", 0)))
         self.continue_on_failure = bool(config.get("continue_on_failure", True))
         self.near_goal_tolerance = max(
-            0.0, float(config.get("near_goal_tolerance", 0.25))
+            0.0, float(config.get("near_goal_tolerance", 0.55))
         )
         self.near_goal_hold_seconds = max(
-            0.0, float(config.get("near_goal_hold_seconds", 3.0))
+            0.0, float(config.get("near_goal_hold_seconds", 1.0))
         )
         self.navigation_timeout_seconds = max(
             0.0, float(config.get("navigation_timeout_seconds", 60.0))
+        )
+        self.stall_timeout_seconds = max(
+            0.0, float(config.get("stall_timeout_seconds", 15.0))
         )
 
     def _load_behavior_config(self):
@@ -327,6 +333,9 @@ class HomePatrolNode(Node):
         if not self.running or self.stop_requested:
             return
         self._reset_goal_tracking()
+        # Never let feedback from the previous waypoint satisfy the next
+        # waypoint's near-goal or blocked-pose checks.
+        self.last_robot_position = None
         self.goal_started_at = time.monotonic()
         waypoint = self.waypoints[self.current_index]
         goal = NavigateToPose.Goal()
@@ -355,6 +364,8 @@ class HomePatrolNode(Node):
             self._handle_navigation_failure("Nav2 拒绝了导航目标")
             return
         self.goal_handle = goal_handle
+        if self.last_progress_at <= 0.0:
+            self.last_progress_at = time.monotonic()
         if self.stop_requested or not self.running:
             goal_handle.cancel_goal_async()
         result_future = goal_handle.get_result_async()
@@ -373,25 +384,39 @@ class HomePatrolNode(Node):
             float(current_position.x) - waypoint["x"],
             float(current_position.y) - waypoint["y"],
         )
-        if (
-            self.best_position_distance is None
-            or position_distance <= self.best_position_distance - 0.03
-        ):
+        elapsed = now - self.goal_started_at if self.goal_started_at else 0.0
+        nav_distance = max(0.0, float(feedback.distance_remaining))
+        position_progressed = False
+        if self.best_position_distance is None:
             self.best_position_distance = position_distance
+        elif position_distance <= self.best_position_distance - 0.03:
+            self.best_position_distance = position_distance
+            position_progressed = True
+
+        # Count meaningful motion in any direction as progress.  This keeps a
+        # legitimate detour, recovery backup, or side-step from being canceled
+        # just because its straight-line distance to the goal is temporarily
+        # flat or increasing.
+        current_xy = self.last_robot_position
+        motion_progressed = False
+        if self.progress_anchor_position is None:
+            self.progress_anchor_position = current_xy
+        elif math.hypot(
+            current_xy[0] - self.progress_anchor_position[0],
+            current_xy[1] - self.progress_anchor_position[1],
+        ) >= 0.08:
+            self.progress_anchor_position = current_xy
+            motion_progressed = True
+
+        if position_progressed or motion_progressed:
             self.last_progress_at = now
 
-        if now - self.last_feedback_at < 2.0:
-            return
-        self.last_feedback_at = now
-        nav_distance = max(0.0, float(feedback.distance_remaining))
-        eta_seconds = int(feedback.estimated_time_remaining.sec)
         arrival_tolerance = self._current_arrival_tolerance()
-
-        elapsed = now - self.goal_started_at if self.goal_started_at else 0.0
         can_accept_near_goal = (
             arrival_tolerance > 0.0
             and elapsed >= 4.0
             and position_distance <= arrival_tolerance
+            and nav_distance <= arrival_tolerance + 0.20
             and self.goal_handle is not None
             and not self.near_goal_cancel_requested
             and not self.timeout_cancel_requested
@@ -415,6 +440,10 @@ class HomePatrolNode(Node):
         else:
             self.near_goal_started_at = None
 
+        if now - self.last_feedback_at < 2.0:
+            return
+        self.last_feedback_at = now
+        eta_seconds = int(feedback.estimated_time_remaining.sec)
         self._publish_status(
             "navigating",
             f"正在前往{self._room_name()}，剩余 {position_distance:.1f} 米",
@@ -443,9 +472,11 @@ class HomePatrolNode(Node):
             self._begin_inspection(accepted_near_goal=True)
             return
         if self.timeout_cancel_requested:
-            timeout = self.navigation_timeout_seconds
+            reason = self.timeout_failure_reason or (
+                f"导航超过 {self.navigation_timeout_seconds:.0f} 秒"
+            )
             self._reset_goal_tracking()
-            self._handle_navigation_failure(f"导航超过 {timeout:.0f} 秒")
+            self._handle_navigation_failure(reason)
             return
         if status == GoalStatus.STATUS_CANCELED:
             self._finish_stopped()
@@ -479,36 +510,40 @@ class HomePatrolNode(Node):
             or self.goal_started_at <= 0.0
             or self.near_goal_cancel_requested
             or self.timeout_cancel_requested
-            or self.navigation_timeout_seconds <= 0.0
         ):
             return
-        elapsed = time.monotonic() - self.goal_started_at
-        if elapsed < self.navigation_timeout_seconds:
-            return
         now = time.monotonic()
-        arrival_tolerance = self._current_arrival_tolerance()
-        if self.last_robot_position is not None and arrival_tolerance > 0.0:
-            waypoint = self.waypoints[self.current_index]
-            position_distance = math.hypot(
-                self.last_robot_position[0] - waypoint["x"],
-                self.last_robot_position[1] - waypoint["y"],
+        elapsed = now - self.goal_started_at
+        stalled_for = (
+            now - self.last_progress_at if self.last_progress_at > 0.0 else 0.0
+        )
+        if (
+            self.stall_timeout_seconds > 0.0
+            and self.last_progress_at > 0.0
+            and stalled_for >= self.stall_timeout_seconds
+        ):
+            self.timeout_cancel_requested = True
+            self.timeout_failure_reason = (
+                f"连续 {self.stall_timeout_seconds:.0f} 秒没有有效进展"
             )
-            if position_distance <= arrival_tolerance:
-                self.near_goal_cancel_requested = True
-                self._publish_status(
-                    "navigating",
-                    f"已到达{self._room_name()}附近，正在结束导航",
-                    self._room_name(),
-                    position_distance=round(position_distance, 2),
-                    arrival_tolerance=arrival_tolerance,
-                )
-                self.goal_handle.cancel_goal_async()
-                return
-        # 超过基础时限但最近仍取得明显进展时继续导航；只有真正停滞
-        # 20 秒以上才判定超时，避免比赛演示在临近目标时突然失败。
-        if self.last_progress_at > 0.0 and now - self.last_progress_at < 20.0:
+            self._publish_status(
+                "retrying",
+                f"{self._room_name()}通道持续受阻，正在结束本巡查点",
+                self._room_name(),
+                stalled_seconds=round(stalled_for, 1),
+            )
+            self.goal_handle.cancel_goal_async()
+            return
+
+        if (
+            self.navigation_timeout_seconds <= 0.0
+            or elapsed < self.navigation_timeout_seconds
+        ):
             return
         self.timeout_cancel_requested = True
+        self.timeout_failure_reason = (
+            f"导航超过 {self.navigation_timeout_seconds:.0f} 秒"
+        )
         self._publish_status(
             "retrying",
             f"前往{self._room_name()}超时，正在结束本巡查点",
@@ -520,10 +555,12 @@ class HomePatrolNode(Node):
     def _reset_goal_tracking(self):
         self.goal_started_at = 0.0
         self.best_position_distance = None
+        self.progress_anchor_position = None
         self.last_progress_at = 0.0
         self.near_goal_started_at = None
         self.near_goal_cancel_requested = False
         self.timeout_cancel_requested = False
+        self.timeout_failure_reason = ""
         self.last_feedback_at = 0.0
 
     def _current_arrival_tolerance(self):

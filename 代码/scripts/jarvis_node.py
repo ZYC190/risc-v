@@ -20,6 +20,7 @@ import math
 import requests
 import json
 import subprocess
+import numpy as np
 
 try:
     import paho.mqtt.client as mqtt
@@ -28,6 +29,7 @@ except Exception:
 
 import rclpy
 from rclpy.node import Node
+from rclpy.executors import ExternalShutdownException
 from sensor_msgs.msg import JointState
 from std_msgs.msg import String, Int32MultiArray
 from geometry_msgs.msg import Twist
@@ -45,11 +47,13 @@ from aip import AipSpeech
 # ==========================================
 def _load_local_secrets():
     candidates = [
+        os.environ.get("ROBOT_SECRETS_FILE", ""),
         os.path.expanduser("~/.robot_secrets"),
+        os.path.expanduser("~/robot2/.robot_secrets"),
         os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".robot_secrets")),
     ]
     for path in candidates:
-        if not os.path.exists(path):
+        if not path or not os.path.exists(path):
             continue
         with open(path, "r", encoding="utf-8") as f:
             for line in f:
@@ -208,16 +212,35 @@ class JarvisCommander(Node):
         self.voice_trigger_sub = self.create_subscription(
             String, '/voice_trigger', self.voice_trigger_callback, 10)
 
+        # ------ 七合一室内环境传感器 ------
+        self.air_data_lock = threading.Lock()
+        self.latest_air_data = None
+        self.latest_air_data_time = 0.0
+        self.air_data_max_age = float(os.environ.get("JARVIS_AIR_DATA_MAX_AGE", "30"))
+        self.air_sensor_sub = self.create_subscription(
+            String, '/air_sensor_data', self.air_sensor_callback, 10)
+
         # ------ 麦克风默认开启 ------
         self.is_listening = True
         self.remote_talk_active = threading.Event()
         self.speech_lock = threading.Lock()
         self.ignore_mic_until = 0.0
         self.parent_talk_queue = queue.Queue()
+        self.audio_queue = queue.Queue(maxsize=5)
+        self.stop_background_listening = None
+        self.voice_min_rms = int(os.environ.get("JARVIS_VOICE_MIN_RMS", "420"))
+        self.voice_min_ms = int(os.environ.get("JARVIS_VOICE_MIN_MS", "240"))
+        self.voice_snr_ratio = float(os.environ.get("JARVIS_VOICE_SNR_RATIO", "1.8"))
 
         self.get_logger().info("🚀 融合版 Jarvis 启动！声源定位 + 唤醒词 + 机械臂 + 聊天")
         self.get_logger().info("🔗 GUI 语音面板联动已就绪 (/voice_log + /voice_trigger)")
+        self.get_logger().info("🌿 已订阅室内环境数据 /air_sensor_data")
         self.get_logger().info("🎤 麦克风默认开启，无需唤醒词，可直接说话。")
+        self.get_logger().info(
+            "🛡️ 人声门控已开启: "
+            f"最低RMS={self.voice_min_rms}, 持续时间={self.voice_min_ms}ms, "
+            f"信噪比={self.voice_snr_ratio:.1f}"
+        )
 
         self.parent_talk_thread = threading.Thread(target=self._parent_talk_worker)
         self.parent_talk_thread.daemon = True
@@ -314,6 +337,92 @@ class JarvisCommander(Node):
             )
         except Exception as e:
             self.get_logger().warning(f"⚠️ 现场对话同步失败: {e}")
+
+    # ==================== 室内环境数据 ====================
+    def air_sensor_callback(self, msg):
+        """缓存七合一传感器发布的最新室内环境数据。"""
+        try:
+            data = json.loads(msg.data)
+            if not isinstance(data, dict):
+                raise ValueError("环境数据不是 JSON 对象")
+        except Exception as exc:
+            self.get_logger().warning(f"⚠️ 室内环境数据解析失败: {exc}")
+            return
+
+        with self.air_data_lock:
+            first_packet = self.latest_air_data is None
+            self.latest_air_data = data
+            self.latest_air_data_time = time.time()
+
+        if first_packet:
+            self.get_logger().info("✅ 已收到七合一传感器实时数据，可进行语音查询")
+            self._send_voice_log("✅ 室内环境传感器已连接")
+
+    @staticmethod
+    def format_sensor_value(value, digits=1):
+        if value is None:
+            return None
+        try:
+            number = float(value)
+            if number.is_integer():
+                return str(int(number))
+            return f"{number:.{digits}f}"
+        except (TypeError, ValueError):
+            return str(value)
+
+    def get_indoor_environment_reply(self, query):
+        """根据用户问题，用最新七合一传感器数据生成播报内容。"""
+        with self.air_data_lock:
+            data = dict(self.latest_air_data) if self.latest_air_data else None
+            data_age = time.time() - self.latest_air_data_time
+
+        if data is None:
+            return "我还没有收到室内环境传感器数据，请先启动空气传感器节点。"
+        if data_age > self.air_data_max_age:
+            return f"室内环境数据已经超过{int(data_age)}秒没有更新，请检查传感器连接。"
+
+        clean_query = re.sub(r'\s+', '', query).lower()
+        temperature = self.format_sensor_value(data.get("温度"))
+        humidity = self.format_sensor_value(data.get("湿度"))
+        co2 = self.format_sensor_value(data.get("CO2"))
+        hcho = self.format_sensor_value(data.get("甲醛"))
+        voc = self.format_sensor_value(data.get("VOC"))
+        pm25 = self.format_sensor_value(data.get("PM2.5"))
+        pm10 = self.format_sensor_value(data.get("PM10"))
+        level = str(data.get("等级", "未知"))
+        advice = str(data.get("建议", "")).strip()
+
+        if "温度" in clean_query or "湿度" in clean_query:
+            values = []
+            if temperature is not None:
+                values.append(f"温度{temperature}摄氏度")
+            if humidity is not None:
+                values.append(f"湿度{humidity}%")
+            return "当前室内" + "，".join(values) + f"，空气质量{level}。"
+
+        if "二氧化碳" in clean_query or "co2" in clean_query:
+            return f"当前室内二氧化碳浓度为{co2}ppm，空气质量{level}。{advice}"
+
+        if "甲醛" in clean_query or "voc" in clean_query:
+            return (
+                f"当前甲醛为{hcho}微克每立方米，VOC为{voc}，"
+                f"空气质量{level}。{advice}"
+            )
+
+        if "pm" in clean_query or "颗粒物" in clean_query or "粉尘" in clean_query:
+            return (
+                f"当前PM2.5为{pm25}，PM10为{pm10}，"
+                f"空气质量{level}。{advice}"
+            )
+
+        summary = (
+            f"当前室内温度{temperature}摄氏度，湿度{humidity}%，"
+            f"二氧化碳{co2}ppm，PM2.5为{pm25}，甲醛{hcho}微克每立方米，"
+            f"空气质量{level}。"
+        )
+        if advice and advice not in summary:
+            summary += advice
+        return summary
 
     # ==================== 声源定位回调 ====================
     def angle_callback(self, msg):
@@ -510,27 +619,121 @@ class JarvisCommander(Node):
             self.get_logger().error(f"❌ ASR异常: {e}")
             return ""
 
-    def listen_once(self, timeout=5, phrase_limit=3):
-        """用USB麦克风听一次，返回识别文字"""
+    def has_human_voice(self, audio, recognizer):
+        """在调用云端 ASR 前检查录音中是否存在持续人声。"""
+        raw_data = audio.get_raw_data(convert_rate=16000, convert_width=2)
+        samples = np.frombuffer(raw_data, dtype=np.int16).astype(np.float32)
+        frame_size = 320  # 16 kHz 下每帧 20 ms
+        frame_count = len(samples) // frame_size
+        if frame_count == 0:
+            return False
+
+        frames = samples[:frame_count * frame_size].reshape(frame_count, frame_size)
+        rms = np.sqrt(np.mean(frames * frames, axis=1))
+        noise_floor = float(np.percentile(rms, 20))
+        threshold = max(
+            float(self.voice_min_rms),
+            noise_floor * self.voice_snr_ratio,
+            float(recognizer.energy_threshold) * 0.6,
+        )
+        voiced = rms >= threshold
+        min_frames = max(1, int(math.ceil(self.voice_min_ms / 20.0)))
+
+        longest_run = 0
+        current_run = 0
+        for is_voiced in voiced:
+            if is_voiced:
+                current_run += 1
+                longest_run = max(longest_run, current_run)
+            else:
+                current_run = 0
+
+        voiced_frames = int(np.count_nonzero(voiced))
+        peak_rms = float(np.max(rms))
+        accepted = (
+            voiced_frames >= min_frames
+            and longest_run >= max(4, min_frames // 2)
+            and peak_rms >= threshold * 1.15
+        )
+        self.get_logger().info(
+            "🔎 人声检测: "
+            f"峰值={peak_rms:.0f}, 环境={noise_floor:.0f}, 门槛={threshold:.0f}, "
+            f"有效={voiced_frames * 20}ms, 连续={longest_run * 20}ms, "
+            f"结果={'通过' if accepted else '过滤'}"
+        )
+        return accepted
+
+    def is_meaningful_text(self, text):
+        """过滤云端 ASR 对噪声产生的空白、语气词和极短误识别。"""
+        clean_text = re.sub(r'[^\w\u4e00-\u9fff]+', '', str(text), flags=re.UNICODE)
+        noise_words = {
+            "嗯", "啊", "哦", "噢", "呃", "额", "哎", "唉", "诶", "喂",
+            "嗯嗯", "啊啊", "哦哦", "哈哈", "呵呵",
+        }
+        single_char_commands = {"左", "右", "抓", "松"}
+        if not clean_text or clean_text in noise_words:
+            return False
+        return len(clean_text) >= 2 or clean_text in single_char_commands
+
+    def start_continuous_listener(self):
+        """校准一次麦克风，然后在后台持续采集语音。"""
         recognizer = sr.Recognizer()
-        recognizer.pause_threshold = 0.8
+        recognizer.pause_threshold = 0.7
+        recognizer.non_speaking_duration = 0.5
+        mic_index = int(os.environ.get("JARVIS_MIC_INDEX", "3"))
+        microphone = sr.Microphone(device_index=mic_index, sample_rate=16000)
+
+        print("\n" + "=" * 45)
+        with microphone as source:
+            self.get_logger().info(f"👂 [仅启动时校准一次] 麦克风设备 index={mic_index}")
+            recognizer.adjust_for_ambient_noise(source, duration=1.0)
+
+        recognizer.energy_threshold = max(
+            recognizer.energy_threshold,
+            float(os.environ.get("JARVIS_TRIGGER_ENERGY", "450")),
+        )
+        recognizer.dynamic_energy_threshold = False
+        self.stop_background_listening = recognizer.listen_in_background(
+            microphone,
+            self.audio_capture_callback,
+            phrase_time_limit=10,
+        )
+        self.get_logger().info("🎧 后台持续监听已开启，可以随时说话")
+        self._send_voice_log("🎧 小微持续监听中，可以随时说话")
+
+    def audio_capture_callback(self, recognizer, audio):
+        """后台录音回调只做人声筛选和入队，不执行任何网络请求。"""
+        if (
+            not self.is_listening
+            or self.remote_talk_active.is_set()
+            or time.time() < self.ignore_mic_until
+        ):
+            return
+
+        if not self.has_human_voice(audio, recognizer):
+            self.get_logger().info("🔇 环境声已过滤，后台监听未中断")
+            return
+
         try:
-            mic_index = int(os.environ.get("JARVIS_MIC_INDEX", "3"))
-            with sr.Microphone(device_index=mic_index, sample_rate=16000) as source:
-                print("\n" + "=" * 45)
-                self.get_logger().info(f"👂 [环境静音校准...] 麦克风设备 index={mic_index}")
-                recognizer.adjust_for_ambient_noise(source, duration=1.0)
-                self.get_logger().info("🎤 [请说话...] ")
-                audio = recognizer.listen(source, timeout=timeout, phrase_time_limit=phrase_limit)
-            self.get_logger().info("⏳ 百度云端语音解码中...")
-            wav_data = audio.get_wav_data()
-            text = self.baidu_asr(wav_data)
-            return text if text else ""
-        except sr.WaitTimeoutError:
+            self.audio_queue.put_nowait(audio)
+        except queue.Full:
+            try:
+                self.audio_queue.get_nowait()
+                self.audio_queue.task_done()
+            except queue.Empty:
+                pass
+            self.audio_queue.put_nowait(audio)
+            self.get_logger().warning("⚠️ 语音队列已满，已保留最新一句话")
+
+    def decode_audio(self, audio):
+        """在处理线程中调用百度 ASR，避免阻塞后台录音。"""
+        self.get_logger().info("⏳ 百度云端语音解码中...")
+        text = self.baidu_asr(audio.get_wav_data())
+        if not self.is_meaningful_text(text):
+            if text:
+                self.get_logger().info(f"🔇 已过滤无意义识别结果: {text}")
             return ""
-        except Exception as e:
-            self.get_logger().error(f"⚠️ 麦克风或识别异常: {e}")
-            return ""
+        return text
 
     def handle_user_text(self, cmd_text):
         """处理唤醒后的连续对话内容：动作指令优先，其余交给家庭服务聊天。"""
@@ -545,6 +748,19 @@ class JarvisCommander(Node):
             self._send_voice_log("💤 已退出连续对话，回到休眠")
             self.speak_and_play("好的，我先待机，有需要再叫我。")
             return "sleep"
+
+        environment_keywords = [
+            "室内环境", "屋里环境", "家里环境", "环境如何", "环境怎么样",
+            "环境安全吗", "空气质量", "空气安全吗", "室内空气",
+            "室内温度", "室内湿度", "温度多少", "湿度多少",
+            "二氧化碳", "CO2", "甲醛", "VOC", "PM2.5", "PM10", "颗粒物",
+        ]
+        if any(keyword.lower() in clean_text.lower() for keyword in environment_keywords):
+            self.get_logger().info("🌿 检测到室内环境查询，读取七合一传感器实时数据")
+            self._send_voice_log("🌿 正在读取室内环境传感器...")
+            reply = self.get_indoor_environment_reply(cmd_text)
+            self.speak_and_play(reply)
+            return "handled"
 
         control_keywords = ["回正", "点头", "左", "右", "跳舞", "抓", "松"]
 
@@ -589,47 +805,54 @@ class JarvisCommander(Node):
 
     # ==================== 核心监听循环 ====================
     def listen_and_act(self):
-        """核心监听与分发循环：直接监听 → 尝试声源转向 → 指令/聊天"""
+        """持续录音队列 → 云端识别 → 尝试声源转向 → 指令/聊天。"""
         time.sleep(1)
-        miss_count = 0
+        try:
+            self.start_continuous_listener()
+        except Exception as e:
+            self.get_logger().error(f"⚠️ 持续监听启动失败: {e}")
+            return
 
-        while rclpy.ok():
-            try:
-                # 如果麦克风被关闭（通过GUI），休眠等待重新开启
-                if not self.is_listening:
-                    time.sleep(1.0)
-                    continue
+        try:
+            while rclpy.ok():
+                try:
+                    if not self.is_listening:
+                        time.sleep(0.3)
+                        continue
 
-                if self.remote_talk_active.is_set() or time.time() < self.ignore_mic_until:
-                    time.sleep(0.3)
-                    continue
+                    try:
+                        audio = self.audio_queue.get(timeout=0.5)
+                    except queue.Empty:
+                        continue
 
-                self.get_logger().info("🎤 请直接说话，小微正在监听...")
-                self._send_voice_log("🎤 小微正在监听，可直接说话")
+                    try:
+                        while (
+                            rclpy.ok()
+                            and (
+                                self.remote_talk_active.is_set()
+                                or time.time() < self.ignore_mic_until
+                            )
+                        ):
+                            time.sleep(0.1)
 
-                self.reset_voice_angle()
-                cmd_text = self.listen_once(timeout=8, phrase_limit=10)
+                        if not rclpy.ok() or not self.is_listening:
+                            continue
 
-                if self.remote_talk_active.is_set() or time.time() < self.ignore_mic_until:
-                    self.get_logger().info("🔇 已忽略机器人播报期间的麦克风输入")
-                    continue
+                        cmd_text = self.decode_audio(audio)
+                        if not cmd_text:
+                            continue
 
-                if not cmd_text:
-                    miss_count += 1
-                    self.get_logger().info(f"⏰ 未收到语音：{miss_count}/3")
-                    if miss_count >= 3:
-                        self._send_voice_log("💤 暂无语音，小微继续待命")
-                        miss_count = 0
-                    continue
+                        self.face_current_speaker("本句")
+                        self.handle_user_text(cmd_text)
+                        self.reset_voice_angle()
+                    finally:
+                        self.audio_queue.task_done()
 
-                miss_count = 0
-                self.face_current_speaker("本句")
-                result = self.handle_user_text(cmd_text)
-                if result == "sleep":
-                    miss_count = 0
-
-            except Exception as e:
-                self.get_logger().error(f"⚠️ 循环异常: {e}")
+                except Exception as e:
+                    self.get_logger().error(f"⚠️ 循环异常: {e}")
+        finally:
+            if self.stop_background_listening is not None:
+                self.stop_background_listening(wait_for_stop=False)
 
 
 def main(args=None):
@@ -637,18 +860,21 @@ def main(args=None):
     node = JarvisCommander()
     try:
         rclpy.spin(node)
-    except KeyboardInterrupt:
+    except (KeyboardInterrupt, ExternalShutdownException):
         print("\n🚪 系统已关闭。")
     finally:
-        # 停止小车
-        twist = Twist()
-        node.cmd_pub.publish(twist)
+        if node.stop_background_listening is not None:
+            node.stop_background_listening(wait_for_stop=False)
+        if rclpy.ok():
+            twist = Twist()
+            node.cmd_pub.publish(twist)
         if node.mqtt_client is not None:
             node.mqtt_client.loop_stop()
             node.mqtt_client.disconnect()
         time.sleep(0.1)
         node.destroy_node()
-        rclpy.shutdown()
+        if rclpy.ok():
+            rclpy.shutdown()
         print("👋 再见！")
 
 

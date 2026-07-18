@@ -119,7 +119,7 @@ def generate_launch_description():
         description='Whether to respawn if a node crashes. Applied when composition is disabled.')
 
     declare_log_level_cmd = DeclareLaunchArgument(
-        'log_level', default_value='info',
+        'log_level', default_value='warn',
         description='log level')
 
     # Specify the actions
@@ -137,7 +137,9 @@ def generate_launch_description():
             arguments=['--ros-args', '--log-level', log_level],
             remappings=remappings,
             output='screen',
-            prefix='taskset -c 4,5 ',),
+            # 底盘、EKF、雷达已分别固定到7、2、3核；导航使用其余五核，
+            # 避免AMCL和控制器挤在两核上造成激光队列雪崩。
+            prefix='taskset -c 0,1,4,5,6 ',),
 
         IncludeLaunchDescription(
             PythonLaunchDescriptionSource(os.path.join(launch_dir, 'slam_launch.py')),

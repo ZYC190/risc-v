@@ -16,11 +16,11 @@ from std_msgs.msg import String
 class ArmGrabberNode(Node):
     def __init__(self):
         super().__init__('arm_grabber_node')
-
+        
         # ==========================================
         # 1. 串口初始化
         # ==========================================
-        self.port_name = '/dev/wheeltec_arm'
+        self.port_name = '/dev/wheeltec_arm' 
         self.baud_rate = 115200
         self.serial_lock = threading.Lock()
         self.abort_event = threading.Event()
@@ -44,8 +44,8 @@ class ArmGrabberNode(Node):
 
         # 订阅双目视觉话题
         self.subscription = self.create_subscription(
-            PointStamped,
-            '/target_point',
+            PointStamped,       
+            '/target_point',    
             self.target_callback,
             10)
         self.cmd_sub = self.create_subscription(
@@ -71,18 +71,18 @@ class ArmGrabberNode(Node):
         self.link_a = 0.105           # 大臂轴距: 10.5cm
         self.link_c = 0.100           # 小臂轴距: 10.0cm
         self.link_gripper = 0.150     # J4轴心到两片夹爪闭合中心的净长度: 15.0cm
-
+        
         # ==========================================
         # 🎯 核心物理标定区 (立体空间外参对齐)
         # ==========================================
-        self.measured_cam_z = 0.32
+        self.measured_cam_z = 0.32          
         self.measured_horizontal_y = 0.28   # 28cm 水平距离
         self.camera_offset_y = -0.08  # 底座到相机真实水平距离: 8cm
         self.camera_offset_z = 0.30   # 相机距离底座垂直高度: 30cm
 
         # 🔍 毫米级极细偏置修正
-        self.x_offset =  -0.07
-        self.y_offset = -0.03
+        self.x_offset =  -0.07   
+        self.y_offset = -0.03     
         self.z_offset = 0.05   # 高度 1.5cm 降落修正
 
         self.get_logger().info(f"🤖 动力学平稳时间轴网络已建立！稳定压倒一切。")
@@ -232,22 +232,22 @@ class ArmGrabberNode(Node):
         j6 = int(rad6 * 1000)
 
         data = bytearray(16)
-        data[0] = 0xAA
-
+        data[0] = 0xAA  
+        
         struct.pack_into('>h', data, 1, j1)
         struct.pack_into('>h', data, 3, j2)
         struct.pack_into('>h', data, 5, j3)
         struct.pack_into('>h', data, 7, j4)
         struct.pack_into('>h', data, 9, j5)
         struct.pack_into('>h', data, 11, j6)
-
-        data[13] = mode
+        
+        data[13] = mode 
 
         check_sum = 0
         for i in range(14):
             check_sum ^= data[i]
         data[14] = check_sum
-        data[15] = 0xBB
+        data[15] = 0xBB 
 
         try:
             with self.serial_lock:
@@ -276,8 +276,8 @@ class ArmGrabberNode(Node):
         if self.has_executed:
             return
 
-        cam_x = msg.point.x
-        cam_z = msg.point.z
+        cam_x = msg.point.x  
+        cam_z = msg.point.z  
 
         # 🎯 收集坐标样本
         self.collected_x.append(cam_x)
@@ -316,26 +316,26 @@ class ArmGrabberNode(Node):
 
         # 1. 空间几何投影
         cos_pitch = self.measured_horizontal_y / self.measured_cam_z
-        horizontal_depth = cam_z * cos_pitch
-
+        horizontal_depth = cam_z * cos_pitch 
+        
         # 2. 转换至机械臂底座坐标系
         bottle_target_y = horizontal_depth + self.camera_offset_y + self.y_offset
         bottle_target_x = cam_x + self.x_offset
 
         # 3. 实时推算瓶子原本的 3D 空间高度
         sin_pitch = math.sqrt(1 - cos_pitch**2)
-        vertical_drop = cam_z * sin_pitch
-        bottle_target_z = self.camera_offset_z - vertical_drop
+        vertical_drop = cam_z * sin_pitch  
+        bottle_target_z = self.camera_offset_z - vertical_drop 
 
         # 4. 🎯 【TCP剥离与真实高度沉降算法】
-        Y_wrist = bottle_target_y - self.link_gripper
-        Z_wrist = bottle_target_z + self.z_offset
+        Y_wrist = bottle_target_y - self.link_gripper    
+        Z_wrist = bottle_target_z + self.z_offset                       
 
         # 5. 纯几何余弦定理解算大臂与小臂
         D2 = Y_wrist**2 + Z_wrist**2
         cos_j3_raw = (D2 - self.link_a**2 - self.link_c**2) / (2 * self.link_a * self.link_c)
         cos_j3_raw = max(-1.0, min(1.0, cos_j3_raw))
-        j3_angle = math.acos(cos_j3_raw)
+        j3_angle = math.acos(cos_j3_raw)  
 
         psi = math.atan2(Y_wrist, Z_wrist)
         cos_mu = (self.link_a**2 + D2 - self.link_c**2) / (2 * self.link_a * math.sqrt(D2))
@@ -346,13 +346,13 @@ class ArmGrabberNode(Node):
         # ⚠️ 姿态方向合成 (负数向前低头)
         # ====================================================
         j1 = math.atan2(bottle_target_x, bottle_target_y) if bottle_target_y != 0 else 0.0
-
+        
         # 拱起折叠构型
-        j2 = -(psi - mu)
-        j3 = -j3_angle
-
+        j2 = -(psi - mu)                  
+        j3 = -j3_angle                    
+        
         # 🌟 绝对水平锁死公式
-        j4 = -1.57 - j2 - j3
+        j4 = -1.57 - j2 - j3               
         j5 = 0.0
 
         # ====================================================
@@ -362,7 +362,7 @@ class ArmGrabberNode(Node):
         if j2 < -1.57 or j2 > 1.57: j2 = max(-1.57, min(1.57, j2))
         if j3 < -1.57 or j3 > 1.57: j3 = max(-1.57, min(1.57, j3))
         if j4 < -0.45 or j4 > 1.57: j4 = max(-0.45, min(1.57, j4))
-
+        
         # ====================================================
         # 🎯 黄金动态时序抓取流水线 (核心微调区)
         # ====================================================

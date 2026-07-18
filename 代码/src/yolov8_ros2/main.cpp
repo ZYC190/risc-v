@@ -182,7 +182,7 @@ int main(int argc, char** argv) {
     // 🟢 1. 唤醒 ROS 2 节点
     rclcpp::init(argc, argv);
     auto node = rclcpp::Node::make_shared("yolov8_sniper_node");
-
+    
     // 🟢 2. 安装“嘴巴”：创建坐标发布器与图像发布器
     auto point_pub = node->create_publisher<geometry_msgs::msg::PointStamped>("/target_point", 10);
     auto image_pub = node->create_publisher<sensor_msgs::msg::Image>("/yolov8/debug_image", 10);
@@ -223,7 +223,7 @@ int main(int argc, char** argv) {
     // ==========================================================
     int window_size = 5;
     Ptr<StereoSGBM> sgbm = StereoSGBM::create(
-        0, 128, window_size,
+        0, 128, window_size, 
         8 * 3 * window_size * window_size, 32 * 3 * window_size * window_size,
         2, 63, 10, 100, 32, StereoSGBM::MODE_SGBM_3WAY
     );
@@ -231,7 +231,7 @@ int main(int argc, char** argv) {
 // ✅ 改成这样（绝对坐标，精准定位）：
 string modelPath = "/home/zyc/robot2/src/yolov8_ros2/model/best.q.onnx";    cout << "【模型加载】正在加载 YOLOv8 目标识别模型：" << modelPath << endl;
     Mat dummy = Mat::zeros(240, 320, CV_8UC3);
-    Yolov8_Fast_GetBoxes(dummy, modelPath);
+    Yolov8_Fast_GetBoxes(dummy, modelPath); 
 
     Mat frame, left_gray, right_gray, left_small, right_small, rect_L, rect_R;
     VideoCapture cap;
@@ -315,13 +315,13 @@ string modelPath = "/home/zyc/robot2/src/yolov8_ros2/model/best.q.onnx";    cout
         } else {
             left_gray = frame(Rect(0, 0, 640, 480)); right_gray = frame(Rect(640, 0, 640, 480));
         }
-
+        
         // 极速缩小
-        resize(left_gray, left_small, Size(320, 240), 0, 0, INTER_NEAREST);
+        resize(left_gray, left_small, Size(320, 240), 0, 0, INTER_NEAREST); 
         resize(right_gray, right_small, Size(320, 240), 0, 0, INTER_NEAREST);
         remap(left_small, rect_L, map1x_small, map1y_small, INTER_NEAREST);
         remap(right_small, rect_R, map2x_small, map2y_small, INTER_NEAREST);
-        cvtColor(rect_L, rect_L_color, COLOR_GRAY2BGR);
+        cvtColor(rect_L, rect_L_color, COLOR_GRAY2BGR); 
 
         Mat raw_for_phone = rect_L_color.clone();
         if (frame_count % 3 == 0) {
@@ -370,7 +370,7 @@ string modelPath = "/home/zyc/robot2/src/yolov8_ros2/model/best.q.onnx";    cout
 
         int min_y = 240, max_y = 0;
         std::vector<Object> valid_targets;
-
+        
         for (const auto& t : detected_targets) {
             if (t.score >= 0.6f) {
                 valid_targets.push_back(t);
@@ -392,10 +392,10 @@ string modelPath = "/home/zyc/robot2/src/yolov8_ros2/model/best.q.onnx";    cout
             min_y = max(0, min_y - 20);
             max_y = min(239, max_y + 20);
             int roi_height = max_y - min_y + 1;
-
+            
             Rect dynamic_roi(0, min_y, 320, roi_height);
             Mat disp16_roi;
-
+            
             sgbm->compute(rect_L(dynamic_roi), rect_R(dynamic_roi), disp16_roi);
 
             for (const auto& target : valid_targets) {
@@ -403,20 +403,20 @@ string modelPath = "/home/zyc/robot2/src/yolov8_ros2/model/best.q.onnx";    cout
                 int x2 = min(319, (int)target.x2); int y2 = min(239, (int)target.y2);
                 int box_cx = (x1 + x2) / 2; int box_cy = (y1 + y2) / 2;
 
-                int local_cy = box_cy - min_y;
+                int local_cy = box_cy - min_y; 
 
-                int radius = 10;
+                int radius = 10; 
                 int rx = max(0, box_cx - radius);
                 int ry_local = max(0, local_cy - radius);
                 int rw = min(319 - rx, radius * 2);
                 int rh_local = min(roi_height - 1 - ry_local, radius * 2);
-
+                
                 std::vector<float> valid_disps;
                 for(int r = ry_local; r < ry_local + rh_local; r++) {
                     for(int c = rx; c < rx + rw; c++) {
                         short d_short = disp16_roi.at<short>(r, c);
                         float d = d_short / 16.0f;
-                        if(d > 2.0f) valid_disps.push_back(d);
+                        if(d > 2.0f) valid_disps.push_back(d); 
                     }
                 }
 
@@ -424,16 +424,16 @@ string modelPath = "/home/zyc/robot2/src/yolov8_ros2/model/best.q.onnx";    cout
                 if (valid_disps.size() > 0) {
                     std::nth_element(valid_disps.begin(), valid_disps.begin() + valid_disps.size()/2, valid_disps.end());
                     float median_disp = valid_disps[valid_disps.size()/2];
-
+                    
                     double W = Q_small.at<double>(3, 2) * median_disp + Q_small.at<double>(3, 3);
-                    Z = Q_small.at<double>(2, 3) / W;
+                    Z = Q_small.at<double>(2, 3) / W; 
                 }
 
-                int ry_global = ry_local + min_y;
+                int ry_global = ry_local + min_y; 
                 rectangle(rect_L_color, Point(x1, y1), Point(x2, y2), Scalar(0, 0, 255), 2);
                 rectangle(rect_L_color, Rect(rx, ry_global, rw, rh_local), Scalar(255, 0, 0), 1);
                 drawMarker(rect_L_color, Point(box_cx, box_cy), Scalar(0, 255, 0), MARKER_CROSS, 10, 2);
-
+                
                 char label_buf[64];
                 if (Z > 0 && !std::isinf(Z) && std::abs(Z) < 800) {
                     sprintf(label_buf, "Bottle(%.0f%%): %dmm", target.score * 100, (int)std::abs(Z));
@@ -441,7 +441,7 @@ string modelPath = "/home/zyc/robot2/src/yolov8_ros2/model/best.q.onnx";    cout
                     // 🟢 计算全局 3D 坐标并选出置信度最高的目标发给机械臂
                     if (target.score > highest_score) {
                         highest_score = target.score;
-
+                        
                         // 运用 Q 矩阵对应的相机内参推算真实物理空间的 X, Y
                         double cx = -Q_small.at<double>(0, 3);
                         double cy = -Q_small.at<double>(1, 3);
@@ -490,12 +490,12 @@ string modelPath = "/home/zyc/robot2/src/yolov8_ros2/model/best.q.onnx";    cout
 
         auto curr_time = chrono::high_resolution_clock::now();
         chrono::duration<float> elapsed = curr_time - prev_time;
-        float fps = 1.0f / elapsed.count();
+        float fps = 1.0f / elapsed.count(); 
         prev_time = curr_time;
 
         if (frame_count > 2) {
-             printf("\r【ROS2视觉节点】实时帧率: %5.1f FPS | 检测目标数: %lu        ", fps, valid_targets.size());
-             fflush(stdout);
+             printf("\r【ROS2视觉节点】实时帧率: %5.1f FPS | 检测目标数: %lu        ", fps, valid_targets.size()); 
+             fflush(stdout); 
         }
 
         if (frame_count % 2 == 0) {
@@ -505,7 +505,7 @@ string modelPath = "/home/zyc/robot2/src/yolov8_ros2/model/best.q.onnx";    cout
                 std::rename(phone_debug_tmp.c_str(), phone_debug_path.c_str());
             } catch (...) {
             }
-
+            
             // 🟢 通过 ROS 2 广播实时画面图像 (用 rqt_image_view 可以远程观看)
             sensor_msgs::msg::Image::SharedPtr img_msg = cv_bridge::CvImage(std_msgs::msg::Header(), "bgr8", rect_L_color).toImageMsg();
             image_pub->publish(*img_msg);
@@ -515,9 +515,9 @@ string modelPath = "/home/zyc/robot2/src/yolov8_ros2/model/best.q.onnx";    cout
         frame.release();
         if (rclcpp::ok()) rclcpp::spin_some(node);
     }
-
+    
     StopFrameServer(frame_server_pid);
-    cap.release();
+    cap.release(); 
     if (rclcpp::ok()) rclcpp::shutdown(); // 🟢 优雅地关闭 ROS 2
     cout.flush();
     cerr.flush();

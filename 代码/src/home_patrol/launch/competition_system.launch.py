@@ -1,4 +1,4 @@
-"""One-command competition startup: all robot services except Nav2."""
+"""One-command startup with a persistent base and phone-selectable modes."""
 
 import os
 
@@ -27,6 +27,5 @@ def generate_launch_description():
                 "home_patrol_system.launch.py",
                 {"competition_mode": "true"},
             ),
-            _include("jarvis_voice", "jarvis_voice.launch.py"),
         ]
     )

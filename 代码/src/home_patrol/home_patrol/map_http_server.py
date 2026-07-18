@@ -67,12 +67,45 @@ class MapState:
         if width <= 0 or height <= 0 or len(msg.data) != width * height:
             return
 
-        pixels = bytearray(width * height * 3)
-        for target_y in range(height):
-            source_y = height - 1 - target_y
-            source_offset = source_y * width
-            target_offset = target_y * width * 3
-            for x in range(width):
+        # Gmapping commonly saves a large, mostly unknown canvas (for example
+        # 384x384 cells for a roughly 3x3 m known area).  Rendering that whole
+        # canvas makes the useful map tiny on the phone.  Crop only the HTTP
+        # representation; Nav2 still receives the original OccupancyGrid.
+        min_x = width
+        min_y = height
+        max_x = -1
+        max_y = -1
+        for index, occupancy in enumerate(msg.data):
+            if occupancy < 0:
+                continue
+            source_y, source_x = divmod(index, width)
+            min_x = min(min_x, source_x)
+            min_y = min(min_y, source_y)
+            max_x = max(max_x, source_x)
+            max_y = max(max_y, source_y)
+
+        if max_x >= 0 and max_y >= 0:
+            padding_cells = 6
+            min_x = max(0, min_x - padding_cells)
+            min_y = max(0, min_y - padding_cells)
+            max_x = min(width - 1, max_x + padding_cells)
+            max_y = min(height - 1, max_y + padding_cells)
+        else:
+            # An all-unknown map has no useful bounding box.  Keep the original
+            # extent so clients still receive valid, non-zero map metadata.
+            min_x = 0
+            min_y = 0
+            max_x = width - 1
+            max_y = height - 1
+
+        cropped_width = max_x - min_x + 1
+        cropped_height = max_y - min_y + 1
+        pixels = bytearray(cropped_width * cropped_height * 3)
+        for target_y in range(cropped_height):
+            source_y = max_y - target_y
+            source_offset = source_y * width + min_x
+            target_offset = target_y * cropped_width * 3
+            for x in range(cropped_width):
                 occupancy = msg.data[source_offset + x]
                 if occupancy < 0:
                     color = (12, 20, 34)
@@ -83,24 +116,48 @@ class MapState:
                 pixel = target_offset + x * 3
                 pixels[pixel : pixel + 3] = bytes(color)
 
-        image = Image.frombytes("RGB", (width, height), bytes(pixels))
+        image = Image.frombytes(
+            "RGB", (cropped_width, cropped_height), bytes(pixels)
+        )
         buffer = io.BytesIO()
         image.save(buffer, format="PNG", optimize=True)
         origin = msg.info.origin
+        resolution = float(msg.info.resolution)
+        origin_yaw = quaternion_yaw(origin.orientation)
+        local_offset_x = min_x * resolution
+        local_offset_y = min_y * resolution
+        cos_yaw = math.cos(origin_yaw)
+        sin_yaw = math.sin(origin_yaw)
+        cropped_origin_x = (
+            float(origin.position.x)
+            + cos_yaw * local_offset_x
+            - sin_yaw * local_offset_y
+        )
+        cropped_origin_y = (
+            float(origin.position.y)
+            + sin_yaw * local_offset_x
+            + cos_yaw * local_offset_y
+        )
 
         with self.lock:
             self.png = buffer.getvalue()
             self.map = {
                 "available": True,
-                "width": width,
-                "height": height,
-                "resolution": float(msg.info.resolution),
+                "width": cropped_width,
+                "height": cropped_height,
+                "resolution": resolution,
                 "origin": {
-                    "x": float(origin.position.x),
-                    "y": float(origin.position.y),
-                    "yaw": quaternion_yaw(origin.orientation),
+                    "x": cropped_origin_x,
+                    "y": cropped_origin_y,
+                    "yaw": origin_yaw,
                 },
-                "version": int(self.map["version"]) + 1,
+                # Keep versions monotonic inside one process and distinct
+                # across restarts, so a phone already on this page does not
+                # mistake the first cropped image for an older version-1 map.
+                "version": max(
+                    int(self.map["version"]) + 1,
+                    int(time.time() * 1000),
+                ),
             }
 
     def update_robot(self, msg):

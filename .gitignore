@@ -8,6 +8,12 @@ src/log/
 
 # Runtime logs and caches
 *.log
+backups/
+logs/
+map_backups/
+mode_backups/
+nav_backups/
+.last_nav_adaptation_backup
 __pycache__/
 *.pyc
 *.pyo
