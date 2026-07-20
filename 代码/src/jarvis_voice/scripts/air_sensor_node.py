@@ -43,9 +43,11 @@ def resolve_serial_port():
 class AirSensorNode(Node):
     def __init__(self):
         super().__init__("air_sensor_node")
+        self.declare_parameter("linkage_enabled", True)
 
         self.publisher_ = self.create_publisher(String, "/air_sensor_data", 10)
         self.esp32_cmd_pub = self.create_publisher(String, "/esp32_cmd", 10)
+        self.voice_announce_pub = self.create_publisher(String, "/voice_announce", 10)
         self.test_sub = self.create_subscription(
             String, "/air_alert_test", self.test_alert_callback, 10
         )
@@ -58,13 +60,17 @@ class AirSensorNode(Node):
 
         self.alarm_active = False
         self.fan_active = False
+        self.light_active = False
         self.normal_count = 0
         self.problem_count = 0
         self.pending_problem_level = None
         self.last_phone_alert_level = None
         self.demo_override_until = 0.0
         self.demo_override_data = None
-        self.linkage_enabled = True
+        self.last_demo_voice_state = None
+        self.linkage_enabled = bool(
+            self.get_parameter("linkage_enabled").value
+        )
         self.latest_sample = None
         self.latest_sample_time = 0.0
         self.latest_sample_lock = threading.Lock()
@@ -85,6 +91,8 @@ class AirSensorNode(Node):
                 f"{SERIAL_PORT} 不存在，已安全回退到空气传感器固定设备 {startup_port}"
             )
         self.get_logger().info(f"环境传感器节点启动，正在连接 {startup_port}...")
+        if not self.linkage_enabled:
+            self.get_logger().info("环境监测保持运行，声光/风扇自动联动已关闭")
 
         self.read_thread = threading.Thread(target=self.read_serial_loop, daemon=True)
         self.read_thread.start()
@@ -177,6 +185,12 @@ class AirSensorNode(Node):
         msg.data = cmd
         self.esp32_cmd_pub.publish(msg)
         self.get_logger().info(f"联动 ESP32: {cmd}")
+
+    def announce(self, text):
+        msg = String()
+        msg.data = text
+        self.voice_announce_pub.publish(msg)
+        self.get_logger().info(f"请求机器人安全播报: {text}")
 
     def publish_phone_alert(self, level, data, severe, warning):
         phone_data = dict(data)
@@ -288,6 +302,9 @@ class AirSensorNode(Node):
 
         if level == "异常":
             self.normal_count = 0
+            if not self.light_active:
+                self.send_esp32_cmd("LIGHT_ON")
+                self.light_active = True
             if not self.alarm_active:
                 self.send_esp32_cmd("ALARM_ON")
                 self.alarm_active = True
@@ -296,6 +313,9 @@ class AirSensorNode(Node):
                 self.fan_active = True
         elif level == "一般":
             self.normal_count = 0
+            if self.light_active:
+                self.send_esp32_cmd("LIGHT_OFF")
+                self.light_active = False
             if self.alarm_active:
                 self.send_esp32_cmd("ALARM_OFF")
                 self.alarm_active = False
@@ -306,6 +326,9 @@ class AirSensorNode(Node):
             # Require several normal frames before turning devices off.
             self.normal_count += 1
             if self.normal_count >= 5:
+                if self.light_active:
+                    self.send_esp32_cmd("LIGHT_OFF")
+                    self.light_active = False
                 if self.alarm_active:
                     self.send_esp32_cmd("ALARM_OFF")
                     self.alarm_active = False
@@ -367,6 +390,9 @@ class AirSensorNode(Node):
             if self.fan_active:
                 self.send_esp32_cmd("FAN_OFF")
                 self.fan_active = False
+            if self.light_active:
+                self.send_esp32_cmd("LIGHT_OFF")
+                self.light_active = False
             self.get_logger().info("导航模式：空气预警与 ESP32 自动联动已暂停")
         elif command in ("LINKAGE_ON", "ENABLE", "RESUME"):
             self.linkage_enabled = True
@@ -417,6 +443,7 @@ class AirSensorNode(Node):
             self.get_logger().warn("触发演示用空气安全异常：触摸屏和手机将同时预警，保持 30 秒")
             self.publish_air_data(fake)
         elif cmd in ("HCHO_ON", "FORMALDEHYDE_ON", "JQ_ON"):
+            should_announce = self.last_demo_voice_state != "HCHO_ON"
             fake = self.demo_hcho_alert_data()
             self.demo_override_data = fake
             self.demo_override_until = time.time() + 30
@@ -425,7 +452,13 @@ class AirSensorNode(Node):
                 "触发甲醛单项超标演示：甲醛 130ug/m3，其他环境指标正常，保持 30 秒"
             )
             self.publish_air_data(fake)
+            if should_announce:
+                self.announce(
+                    "家里面甲醛超标了，快远离，快远离，已打开风扇通风。"
+                )
+            self.last_demo_voice_state = "HCHO_ON"
         elif cmd in ("OFF", "ALARM_OFF", "TEST_OFF", "CLEAR"):
+            should_announce = self.last_demo_voice_state != "CLEAR"
             normal = self.demo_normal_data()
             self.demo_override_data = None
             self.demo_override_until = 0.0
@@ -433,6 +466,11 @@ class AirSensorNode(Node):
             self.get_logger().info("清除演示用空气安全异常")
             self.normal_count = 5
             self.publish_air_data(normal)
+            if should_announce:
+                self.announce(
+                    "家里面环境数据恢复正常，家里面安全了，风扇已关闭。"
+                )
+            self.last_demo_voice_state = "CLEAR"
 
     def read_serial_loop(self):
         while rclpy.ok():

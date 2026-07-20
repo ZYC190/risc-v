@@ -1,4 +1,4 @@
-configured: false
+configured: true
 frame_id: map
 inspection_seconds: 3.0
 max_retries: 0
@@ -10,28 +10,28 @@ stall_timeout_seconds: 15.0
 waypoints:
 - name: 客厅
   recorded: true
-  x: -0.0789
-  y: 0.2252
-  yaw: 1.7875
+  x: -0.2848
+  y: 1.9227
+  yaw: 2.1845
   arrival_tolerance: 0.55
 - name: 厨房
   recorded: true
-  x: 1.4918
-  y: 0.1785
-  yaw: 2.3367
+  x: 1.6131
+  y: 0.4378
+  yaw: 2.6742
   arrival_tolerance: 0.55
 - name: 主卧
   recorded: true
-  x: 1.1987
-  y: 1.509
-  yaw: 1.5638
+  x: 1.3139
+  y: 2.0615
+  yaw: 0.9875
 - name: 儿童房
   recorded: true
-  x: 0.1233
-  y: 0.2133
-  yaw: 0.0464
+  x: 1.7723
+  y: 0.4712
+  yaw: 0.0607
 - name: 走廊
-  recorded: false
-  x: 0.0
-  y: 0.0
-  yaw: 0.0
+  recorded: true
+  x: 0.6236
+  y: 1.3432
+  yaw: -2.107

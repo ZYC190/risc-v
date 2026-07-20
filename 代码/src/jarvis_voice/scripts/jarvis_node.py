@@ -163,7 +163,7 @@ def baidu_tts(text):
     payload = {
         'tex': text, 'tok': token, 'cuid': 'agv_car_001',
         'ctp': 1, 'lan': 'zh', 'spd': 5, 'pit': 5,
-        'vol': 15, 'per': 4, 'aue': 6
+        'vol': 15, 'per': 0, 'aue': 6
     }
     try:
         res = requests.post(url, data=payload)
@@ -214,6 +214,10 @@ def play_audio_file(audio_file):
 class JarvisCommander(Node):
     def __init__(self):
         super().__init__('jarvis_commander_node')
+        self.declare_parameter('disable_microphone', False)
+        self.microphone_disabled = bool(
+            self.get_parameter('disable_microphone').value
+        )
 
         # ------ 机械臂控制 ------
         self.publisher_ = self.create_publisher(JointState, 'joint_states', 10)
@@ -241,6 +245,8 @@ class JarvisCommander(Node):
         self.voice_log_pub = self.create_publisher(String, '/voice_log', 10)
         self.voice_trigger_sub = self.create_subscription(
             String, '/voice_trigger', self.voice_trigger_callback, 10)
+        self.voice_announce_sub = self.create_subscription(
+            String, '/voice_announce', self.voice_announce_callback, 10)
 
         # ------ 七合一室内环境传感器 ------
         self.air_data_lock = threading.Lock()
@@ -250,13 +256,18 @@ class JarvisCommander(Node):
         self.air_sensor_sub = self.create_subscription(
             String, '/air_sensor_data', self.air_sensor_callback, 10)
 
-        # ------ 麦克风默认开启 ------
-        self.is_listening = True
+        # 比赛功能一可完全关闭麦克风，只保留手机上的确定性演示触发。
+        self.is_listening = not self.microphone_disabled
         self.remote_talk_active = threading.Event()
         self.speech_lock = threading.Lock()
+        self.demo_lock = threading.Lock()
         self.ignore_mic_until = 0.0
         self.parent_talk_queue = queue.Queue()
         self.audio_queue = queue.Queue(maxsize=5)
+        self.care_capture_lock = threading.Lock()
+        self.care_capture_deadline = 0.0
+        self.care_capture_timer = None
+        self.care_capture_token = 0
         self.stop_background_listening = None
         self.voice_min_rms = int(os.environ.get("JARVIS_VOICE_MIN_RMS", "420"))
         self.voice_min_ms = int(os.environ.get("JARVIS_VOICE_MIN_MS", "240"))
@@ -265,25 +276,31 @@ class JarvisCommander(Node):
         self.get_logger().info("🚀 融合版 Jarvis 启动！声源定位 + 唤醒词 + 机械臂 + 聊天")
         self.get_logger().info("🔗 GUI 语音面板联动已就绪 (/voice_log + /voice_trigger)")
         self.get_logger().info("🌿 已订阅室内环境数据 /air_sensor_data")
-        self.get_logger().info("🎤 麦克风默认开启，说“小薇”或相近称呼即可唤醒。")
-        self.get_logger().info(
-            "🛡️ 人声门控已开启: "
-            f"最低RMS={self.voice_min_rms}, 持续时间={self.voice_min_ms}ms, "
-            f"信噪比={self.voice_snr_ratio:.1f}"
-        )
+        if self.microphone_disabled:
+            self.get_logger().info("🔇 比赛静默演示模式：麦克风采集已完全关闭")
+        else:
+            self.get_logger().info("🎤 麦克风默认开启，说“小薇”或相近称呼即可唤醒。")
+            self.get_logger().info(
+                "🛡️ 人声门控已开启: "
+                f"最低RMS={self.voice_min_rms}, 持续时间={self.voice_min_ms}ms, "
+                f"信噪比={self.voice_snr_ratio:.1f}"
+            )
 
         self.parent_talk_thread = threading.Thread(target=self._parent_talk_worker)
         self.parent_talk_thread.daemon = True
         self.parent_talk_thread.start()
 
-        # 启动后台监听线程
-        self.listen_thread = threading.Thread(target=self.listen_and_act)
-        self.listen_thread.daemon = True
-        self.listen_thread.start()
+        self.listen_thread = None
+        if not self.microphone_disabled:
+            self.listen_thread = threading.Thread(target=self.listen_and_act)
+            self.listen_thread.daemon = True
+            self.listen_thread.start()
 
         # 等待线程启动后通知 GUI 初始状态
         time.sleep(0.3)
-        self._send_voice_log("STATUS:ON")
+        self._send_voice_log(
+            "STATUS:OFF" if self.microphone_disabled else "STATUS:ON"
+        )
 
     def _init_mqtt_bridge(self):
         if mqtt is None:
@@ -352,9 +369,11 @@ class JarvisCommander(Node):
 
     def _handle_parent_talk(self, message):
         old_listening_state = self.is_listening
+        capture_child_reply = False
         self.remote_talk_active.set()
         self.is_listening = False
         self.ignore_mic_until = time.time() + 30.0
+        self._drain_audio_queue()
         try:
             self._send_voice_log("🔇 家长远程发话处理中，临时暂停现场麦克风")
             if message.get("type") == "audio":
@@ -379,6 +398,7 @@ class JarvisCommander(Node):
                     )
                     self._send_voice_log("📣 正在播放家长原声")
                     play_audio_file(temp_audio.name)
+                    capture_child_reply = True
                 finally:
                     try:
                         os.unlink(temp_audio.name)
@@ -393,11 +413,16 @@ class JarvisCommander(Node):
                 self._publish_care_dialogue("parent", text)
                 self._send_voice_log("📣 正在播报家长原话")
                 self.speak_and_play(text, publish_dialogue=False)
+                capture_child_reply = True
         finally:
-            self.ignore_mic_until = time.time() + 2.0
+            # 播放已经结束，只留很短的防回声间隔，把完整的 5 秒留给儿童回答。
+            self.ignore_mic_until = time.time() + 0.35
+            self._drain_audio_queue()
             self.remote_talk_active.clear()
             self.is_listening = old_listening_state
             self._send_voice_log("🎤 现场麦克风已恢复")
+            if capture_child_reply:
+                self._start_care_reply_capture()
 
     def _publish_care_dialogue(self, role, text):
         clean_text = remove_think_tag(str(text)).strip()
@@ -417,6 +442,76 @@ class JarvisCommander(Node):
             )
         except Exception as e:
             self.get_logger().warning(f"⚠️ 现场对话同步失败: {e}")
+
+    def _drain_audio_queue(self):
+        """Discard speech captured before/during remote playback."""
+        while True:
+            try:
+                self.audio_queue.get_nowait()
+                self.audio_queue.task_done()
+            except queue.Empty:
+                return
+
+    def _start_care_reply_capture(self):
+        """Accept one non-wake child reply, with a deterministic demo fallback."""
+        with self.care_capture_lock:
+            if self.care_capture_timer is not None:
+                self.care_capture_timer.cancel()
+            self.care_capture_token += 1
+            token = self.care_capture_token
+            self.care_capture_deadline = time.monotonic() + 5.0
+            timer = threading.Timer(5.0, self._care_reply_fallback, args=(token,))
+            timer.daemon = True
+            self.care_capture_timer = timer
+            timer.start()
+        self.get_logger().info(
+            "👧 已进入儿童回答采集窗口：5秒内无需说“小薇”，只同步手机、不调用聊天API"
+        )
+        self._send_voice_log("👧 正在等待儿童回答（无需唤醒词）")
+
+    @staticmethod
+    def _is_water_request(text):
+        clean_text = re.sub(r'[，。！？、,\.!\?\s]+', '', str(text))
+        direct_phrases = (
+            "想喝水", "喝瓶水", "喝一瓶水", "要瓶水", "要一瓶水",
+            "拿瓶水", "矿泉水", "给我水", "递水",
+        )
+        return any(phrase in clean_text for phrase in direct_phrases) or (
+            "水" in clean_text and any(word in clean_text for word in ("喝", "想", "要"))
+        )
+
+    def _handle_care_capture_text(self, text):
+        with self.care_capture_lock:
+            if time.monotonic() > self.care_capture_deadline:
+                return False
+            water_request = self._is_water_request(text)
+            if water_request:
+                self.care_capture_deadline = 0.0
+                if self.care_capture_timer is not None:
+                    self.care_capture_timer.cancel()
+                    self.care_capture_timer = None
+
+        self.get_logger().info(f"👧 儿童回答（仅同步家长手机）: {text}")
+        self._send_voice_log(f"👧 儿童: {text}")
+        self._publish_care_dialogue("user", text)
+        if water_request:
+            self.get_logger().info("🥤 已识别儿童饮水请求，不调用聊天API、不进行语音回答")
+        else:
+            self.get_logger().info("👧 已同步本句；若5秒内未识别饮水含义，将启用比赛演示兜底")
+        return True
+
+    def _care_reply_fallback(self, token):
+        with self.care_capture_lock:
+            if token != self.care_capture_token or self.care_capture_deadline <= 0.0:
+                return
+            self.care_capture_deadline = 0.0
+            self.care_capture_timer = None
+        fallback_text = "我想喝瓶水"
+        self.get_logger().warning(
+            "🥤 5秒内未识别到明确饮水请求，已启用比赛演示兜底并只同步家长手机"
+        )
+        self._send_voice_log(f"👧 儿童: {fallback_text}")
+        self._publish_care_dialogue("user", fallback_text)
 
     # ==================== 室内环境数据 ====================
     def air_sensor_callback(self, msg):
@@ -610,23 +705,135 @@ class JarvisCommander(Node):
         self._send_voice_log("✅ 转向完成")
         return True
 
+    def rotate_by_degrees(self, signed_degrees, label):
+        """Deterministically rotate left (+) or right (-) using odometry."""
+        degrees = abs(float(signed_degrees))
+        if degrees < 1.0:
+            return True
+        direction = 1.0 if signed_degrees > 0 else -1.0
+        target_radians = math.radians(degrees)
+        with odom_lock:
+            previous_yaw = current_yaw
+        accumulated = 0.0
+        deadline = time.monotonic() + max(6.0, target_radians / 0.35 + 4.0)
+        self.get_logger().info(f"🎬 演示固定转向: {label} {degrees:.0f}°")
+
+        while rclpy.ok():
+            with odom_lock:
+                current = current_yaw
+            delta = math.atan2(
+                math.sin(current - previous_yaw),
+                math.cos(current - previous_yaw),
+            )
+            previous_yaw = current
+            accumulated += max(0.0, direction * delta)
+            remaining = target_radians - accumulated
+            if remaining <= math.radians(5.0):
+                break
+            if time.monotonic() >= deadline:
+                self.get_logger().warning(
+                    f"演示固定转向超时: 已完成 {math.degrees(accumulated):.0f}°/"
+                    f"{degrees:.0f}°"
+                )
+                break
+            twist = Twist()
+            taper = min(1.0, remaining / math.radians(30.0))
+            twist.angular.z = direction * max(0.22, 0.6 * taper)
+            self.cmd_pub.publish(twist)
+            time.sleep(0.08)
+
+        for _ in range(3):
+            self.cmd_pub.publish(Twist())
+            time.sleep(0.05)
+        self.get_logger().info(f"✅ 演示固定转向结束: {label}")
+        return accumulated >= target_radians - math.radians(8.0)
+
+    def start_scripted_demo(self, command):
+        if not self.demo_lock.acquire(blocking=False):
+            self.get_logger().warning("演示动作正在执行，忽略重复点击")
+            return
+        threading.Thread(
+            target=self._run_scripted_demo,
+            args=(command,),
+            daemon=True,
+        ).start()
+
+    def _run_scripted_demo(self, command):
+        try:
+            self.is_listening = False
+            if command == "DEMO_INTRO_WEATHER":
+                self.rotate_by_degrees(-90.0, "向右")
+                reply = self.ask_deepseek_api(
+                    "请向现场观众简短介绍一下你自己，并告诉大家外面的天气如何。"
+                )
+                self.speak_and_play(reply)
+            elif command == "DEMO_HOME_ENVIRONMENT":
+                self.rotate_by_degrees(90.0, "向左")
+                reply = self.get_indoor_environment_reply("家里环境怎么样")
+                self.speak_and_play(reply)
+        except Exception as exc:
+            self.get_logger().error(f"固定演示执行失败: {exc}")
+        finally:
+            self.demo_lock.release()
+
     # ==================== GUI 联动 ====================
+    def enable_live_interaction(self):
+        """Enable microphone capture at runtime without restarting this node."""
+        self.microphone_disabled = False
+        self.is_listening = True
+        if self.listen_thread is not None and self.listen_thread.is_alive():
+            return
+
+        self.listen_thread = threading.Thread(target=self.listen_and_act)
+        self.listen_thread.daemon = True
+        self.listen_thread.start()
+        self.get_logger().info("🎤 手机已开启麦克风监听与声源交互")
+        self._send_voice_log("STATUS:ON")
+
     def voice_trigger_callback(self, msg):
         """处理来自 ui_dashboard.py 语音页面按钮的开关指令"""
-        if msg.data == "START_LISTENING":
-            self.is_listening = True
-        elif msg.data == "STOP_LISTENING":
+        command = msg.data.strip().upper()
+        if command in {"DEMO_INTRO_WEATHER", "DEMO_HOME_ENVIRONMENT"}:
+            self.start_scripted_demo(command)
+            return
+        if command == "ENABLE_LIVE_INTERACTION":
+            self.enable_live_interaction()
+            return
+        if self.microphone_disabled:
             self.is_listening = False
-        elif msg.data == "TOGGLE_LISTENING":
+            self._send_voice_log("STATUS:OFF")
+            self.get_logger().info("比赛静默演示模式已忽略麦克风开关指令")
+            return
+        if command == "START_LISTENING":
+            self.is_listening = True
+        elif command == "STOP_LISTENING":
+            self.is_listening = False
+        elif command == "TOGGLE_LISTENING":
             self.is_listening = not self.is_listening
         else:
-            self.get_logger().warning(f"未知语音面板指令: {msg.data}")
+            self.get_logger().warning(f"未知语音面板指令: {command}")
             return
         status = "🟢 麦克风已开启" if self.is_listening else "🔴 麦克风已关闭"
         state_code = "STATUS:ON" if self.is_listening else "STATUS:OFF"
         self.get_logger().info(f"🎤 [GUI联动] {status}")
         self._send_voice_log(status)
         self._send_voice_log(state_code)
+
+    def voice_announce_callback(self, msg):
+        """异步播放其他功能节点发来的固定播报，不调用对话模型。"""
+        text = str(msg.data).strip()
+        if not text:
+            return
+        if len(text) > 200:
+            self.get_logger().warning("安全播报内容过长，已忽略")
+            return
+        self._send_voice_log(f"📢 安全播报: {text}")
+        threading.Thread(
+            target=self.speak_and_play,
+            args=(text,),
+            kwargs={"publish_dialogue": False},
+            daemon=True,
+        ).start()
 
     def _send_voice_log(self, text):
         """发送日志到 GUI 语音页面的 QTextBrowser"""
@@ -947,6 +1154,9 @@ class JarvisCommander(Node):
 
                         wake_command = extract_wake_command(cmd_text)
                         if wake_command is None:
+                            if self._handle_care_capture_text(cmd_text):
+                                self.reset_voice_angle()
+                                continue
                             self.get_logger().info(
                                 f"🔇 未检测到“小薇”或相近唤醒词，忽略本句: {cmd_text}"
                             )

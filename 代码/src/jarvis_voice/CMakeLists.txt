@@ -5,12 +5,16 @@ find_package(ament_cmake REQUIRED)
 
 install(PROGRAMS
   scripts/air_sensor_node
+  scripts/announcement_node
+  scripts/care_demo_node
   scripts/jarvis_node
   DESTINATION lib/${PROJECT_NAME}
 )
 
 install(FILES
   scripts/air_sensor_node.py
+  scripts/announcement_node.py
+  scripts/care_demo_node.py
   scripts/jarvis_node.py
   DESTINATION lib/${PROJECT_NAME}
 )

@@ -149,4 +149,22 @@ if command -v lsof >/dev/null 2>&1 \
         -name 'fastrtps_*' -delete 2>/dev/null || true
 fi
 
+# ros2cli's daemon may keep anonymous Nav2 publishers in its graph cache after
+# all real processes have stopped.  Clear only this user's CLI daemon so the
+# next safety preflight sees the live DDS graph instead of ghost /cmd_vel
+# endpoints.  Robot nodes do not depend on this daemon.
+timeout 5 /opt/ros/humble/bin/ros2 daemon stop >/dev/null 2>&1 || true
+mapfile -t daemon_pids < <(
+    pgrep -u "$(id -u)" -f \
+        '^/usr/bin/python3 -c from ros2cli\.daemon\.daemonize import main; main\(\) --name ros2-daemon' \
+        2>/dev/null || true
+)
+for pid in "${daemon_pids[@]}"; do
+    kill -TERM "${pid}" 2>/dev/null || true
+done
+sleep 0.5
+for pid in "${daemon_pids[@]}"; do
+    kill -KILL "${pid}" 2>/dev/null || true
+done
+
 echo 'Competition system stopped.'

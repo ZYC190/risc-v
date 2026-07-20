@@ -2,6 +2,7 @@
 # coding=utf-8
 
 import json
+import os
 import rclpy
 from rclpy.node import Node
 import serial
@@ -12,6 +13,12 @@ import threading
 from geometry_msgs.msg import PointStamped
 from sensor_msgs.msg import JointState
 from std_msgs.msg import String
+
+
+ARM_OFFSETS_FILE = os.environ.get(
+    "ROBOT_ARM_OFFSETS_FILE",
+    "/home/zyc/robot2/config/arm_grab_offsets.json",
+)
 
 class ArmGrabberNode(Node):
     def __init__(self):
@@ -82,8 +89,9 @@ class ArmGrabberNode(Node):
 
         # 🔍 毫米级极细偏置修正
         self.x_offset =  -0.07   
-        self.y_offset = -0.03     
+        self.y_offset = -0.05
         self.z_offset = 0.05   # 高度 1.5cm 降落修正
+        self._load_persisted_offsets()
 
         self.get_logger().info(f"🤖 动力学平稳时间轴网络已建立！稳定压倒一切。")
 
@@ -97,11 +105,70 @@ class ArmGrabberNode(Node):
         self.has_executed = False        # 抓取完成标志位
         self.grab_enabled = False        # 触摸屏/手机确认后才抓取
         self.right_turn_rad = 0.75       # 抓取后底座向右转角度，方向反了就改成 -0.75
+        self.preview_detection_count = 0
+        self.preview_detection_notified = False
+        self.preview_last_seen = 0.0
+        self.preview_max_gap = 0.7        # 两帧间隔过大则不算连续识别
+        self.preview_presence_state = "unknown"
+        self.preview_presence_timer = self.create_timer(
+            0.2, self.check_preview_presence
+        )
 
         self.get_logger().info(
             f"机械臂抓取偏移：X={self.x_offset:.3f}, "
             f"Y={self.y_offset:.3f}, Z={self.z_offset:.3f} m"
         )
+
+    @staticmethod
+    def _valid_offsets(values):
+        return all(
+            math.isfinite(value) and -0.5 <= value <= 0.5
+            for value in values
+        )
+
+    def _load_persisted_offsets(self):
+        try:
+            with open(ARM_OFFSETS_FILE, "r", encoding="utf-8") as stream:
+                data = json.load(stream)
+            values = tuple(
+                float(data[key])
+                for key in ("x_offset", "y_offset", "z_offset")
+            )
+            if not self._valid_offsets(values):
+                raise ValueError("偏移超出 -0.5 到 0.5 米范围")
+            self.x_offset, self.y_offset, self.z_offset = values
+            self.get_logger().info(
+                f"已加载持久化抓取偏移: {ARM_OFFSETS_FILE}"
+            )
+        except FileNotFoundError:
+            self.get_logger().info("尚无持久化抓取偏移，使用程序默认值")
+        except (OSError, KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
+            self.get_logger().warning(
+                f"读取持久化抓取偏移失败，使用程序默认值: {exc}"
+            )
+
+    def _save_persisted_offsets(self):
+        data = {
+            "x_offset": self.x_offset,
+            "y_offset": self.y_offset,
+            "z_offset": self.z_offset,
+        }
+        temp_file = f"{ARM_OFFSETS_FILE}.tmp.{os.getpid()}"
+        try:
+            os.makedirs(os.path.dirname(ARM_OFFSETS_FILE), exist_ok=True)
+            with open(temp_file, "w", encoding="utf-8") as stream:
+                json.dump(data, stream, ensure_ascii=False, indent=2)
+                stream.flush()
+                os.fsync(stream.fileno())
+            os.replace(temp_file, ARM_OFFSETS_FILE)
+            return True
+        except OSError as exc:
+            self.get_logger().error(f"持久化抓取偏移失败: {exc}")
+            try:
+                os.unlink(temp_file)
+            except OSError:
+                pass
+            return False
 
     def publish_status(self, text):
         self.get_logger().info(text)
@@ -109,6 +176,46 @@ class ArmGrabberNode(Node):
             msg = String()
             msg.data = text
             self.status_pub.publish(msg)
+
+    def publish_offset_status(self):
+        if not hasattr(self, "status_pub"):
+            return
+        msg = String()
+        msg.data = json.dumps(
+            {
+                "event": "arm_offsets",
+                "x_offset": self.x_offset,
+                "y_offset": self.y_offset,
+                "z_offset": self.z_offset,
+            },
+            ensure_ascii=False,
+        )
+        self.status_pub.publish(msg)
+
+    def check_preview_presence(self):
+        """Clear the retained phone hint shortly after the bottle disappears."""
+        if self.preview_presence_state == "unknown":
+            # Publish after ROS discovery has had time to connect the bridge;
+            # this also clears a retained detection from an earlier run.
+            self.preview_presence_state = "absent"
+            self.publish_status("未发现水瓶")
+            return
+
+        bottle_is_stale = (
+            self.preview_presence_state == "present"
+            and (
+                self.grab_enabled
+                or time.monotonic() - self.preview_last_seen
+                > self.preview_max_gap
+            )
+        )
+        if not bottle_is_stale:
+            return
+
+        self.preview_presence_state = "absent"
+        self.preview_detection_count = 0
+        self.preview_detection_notified = False
+        self.publish_status("未发现水瓶")
 
     def arm_cmd_callback(self, msg):
         raw_cmd = msg.data.strip()
@@ -173,10 +280,13 @@ class ArmGrabberNode(Node):
             self.publish_status("抓取偏移设置失败：每项必须在 -0.5 到 0.5 米之间。")
             return
         self.x_offset, self.y_offset, self.z_offset = offsets
+        saved = self._save_persisted_offsets()
+        suffix = "，已持久化保存" if saved else "，但持久化保存失败"
         self.publish_status(
             f"抓取偏移已更新：X={self.x_offset:.3f}, "
-            f"Y={self.y_offset:.3f}, Z={self.z_offset:.3f} m"
+            f"Y={self.y_offset:.3f}, Z={self.z_offset:.3f} m{suffix}"
         )
+        self.publish_offset_status()
 
     def release_gripper(self):
         if self.is_busy:
@@ -270,6 +380,19 @@ class ArmGrabberNode(Node):
 
     def target_callback(self, msg):
         if not self.grab_enabled:
+            now = time.monotonic()
+            if now - self.preview_last_seen > self.preview_max_gap:
+                self.preview_detection_count = 0
+                self.preview_detection_notified = False
+            self.preview_last_seen = now
+            self.preview_detection_count += 1
+            if (
+                self.preview_detection_count >= 2
+                and not self.preview_detection_notified
+            ):
+                self.preview_detection_notified = True
+                self.preview_presence_state = "present"
+                self.publish_status("发现水瓶")
             return
 
         # 🛡️ 已经完成抓取，忽略后续所有坐标
@@ -422,7 +545,8 @@ def main(args=None):
         pass
     finally:
         node.destroy_node()
-        rclpy.shutdown()
+        if rclpy.ok():
+            rclpy.shutdown()
 
 if __name__ == '__main__':
     main()

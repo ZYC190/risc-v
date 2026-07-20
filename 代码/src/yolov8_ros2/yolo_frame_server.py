@@ -142,7 +142,12 @@ def main():
     print(f"Raw image: {args.image}")
     print(f"Debug image: {args.debug}")
     print("This server does not open the camera. Run yolov8_node first or at the same time.")
-    server.serve_forever()
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        pass
+    finally:
+        server.server_close()
 
 
 if __name__ == "__main__":

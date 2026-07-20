@@ -77,6 +77,8 @@ class NavigationManager(Node):
             "sound": None,
             "ui": None,
             "voice": None,
+            "announce": None,
+            "care": None,
             "air": None,
             "arm": None,
             "vision": None,
@@ -86,6 +88,8 @@ class NavigationManager(Node):
             "sound": "声源定位",
             "ui": "触摸屏",
             "voice": "语音交互",
+            "announce": "导航固定播报",
+            "care": "递水演示对话",
             "air": "安全预警",
             "arm": "机械臂",
             "vision": "双目视觉",
@@ -102,8 +106,11 @@ class NavigationManager(Node):
         self.last_amcl_pose = None
         self.last_odom_pose = None
         self.initial_map_pose = (0.0, 0.0, 0.0)
+        self.pending_initial_pose = None
         self.action_unready_since = 0.0
         self.navigation_mode = False
+        self.live_interaction_enabled = False
+        self.voice_enable_repeats = 0
         self.vision_start_at = 0.0
         self.initial_services_started = False
         self.monitor_timer = self.create_timer(0.25, self._monitor)
@@ -132,12 +139,22 @@ class NavigationManager(Node):
 
         if command == "SET_MODE":
             self._set_mode(payload.get("mode", ""))
+        elif command == "SET_INITIAL_POSE":
+            self._set_initial_pose(payload)
         elif command in {"MODE_INTERACTION", "INTERACTION"}:
             self._set_mode("interaction")
         elif command in {"MODE_WATER", "WATER", "DELIVER_WATER"}:
             self._set_mode("water")
         elif command in {"MODE_PATROL", "PATROL"}:
             self._set_mode("patrol")
+        elif command in {"DEMO_INTRO_WEATHER", "DEMO_HOME_ENVIRONMENT"}:
+            if self.current_mode != "interaction":
+                self.get_logger().warning("固定语音演示仅允许在功能一触发")
+                return
+            self._publish_string(self.voice_control_pub, command)
+            self.get_logger().info(f"已转发功能一固定演示指令: {command}")
+        elif command == "ENABLE_VOICE_INTERACTION":
+            self._enable_live_interaction()
         elif command in {"START", "RESET_ORIGIN"}:
             self._start_navigation()
         elif command == "STOP":
@@ -146,6 +163,52 @@ class NavigationManager(Node):
             self._publish_status(self.state, self.message)
         else:
             self._publish_status("error", f"不支持的导航系统指令：{command}")
+
+    def _set_initial_pose(self, payload):
+        pose = payload.get("pose", payload.get("waypoint", payload))
+        try:
+            values = (
+                float(pose["x"]),
+                float(pose["y"]),
+                float(pose.get("yaw", 0.0)),
+            )
+        except (KeyError, TypeError, ValueError):
+            self._publish_status("error", "设置初始位置失败：缺少有效的 X、Y、朝向")
+            return
+        if not all(math.isfinite(value) for value in values):
+            self._publish_status("error", "设置初始位置失败：坐标或朝向不是有效数字")
+            return
+
+        self.pending_initial_pose = values
+        self.initial_map_pose = values
+        x, y, yaw = values
+        self.get_logger().info(
+            f"手机设置地图初始位置：x={x:.2f}, y={y:.2f}, "
+            f"yaw={math.degrees(yaw):.0f}°"
+        )
+
+        start_navigation = bool(payload.get("start_navigation", True))
+        if self.current_mode != "patrol":
+            if start_navigation:
+                self._set_mode("patrol")
+            else:
+                self._publish_status("initial_pose_saved", "机器人初始位置已保存")
+            return
+
+        if not self._process_running("nav"):
+            if start_navigation:
+                self._start_navigation()
+            else:
+                self._publish_status("initial_pose_saved", "机器人初始位置已保存")
+            return
+
+        if self.navigator.server_is_ready():
+            self._begin_origin_localization()
+        else:
+            self.start_requested_at = time.monotonic()
+            self._publish_status(
+                "starting", "初始位置已保存，等待 Nav2 就绪后自动应用"
+            )
 
     def _start_navigation(self):
         if self.current_mode != "patrol":
@@ -216,6 +279,7 @@ class NavigationManager(Node):
         previous_mode = self.current_mode
         self.current_mode = mode
         self.navigation_mode = mode == "patrol"
+        self.voice_enable_repeats = 0
         self.vision_start_at = 0.0
 
         if mode != "patrol":
@@ -226,34 +290,48 @@ class NavigationManager(Node):
             self.action_unready_since = 0.0
 
         if mode == "interaction":
+            self.live_interaction_enabled = False
+            self._stop_process("announce")
+            self._stop_process("care")
             self._stop_process("vision")
             self._stop_process("arm")
+            self._stop_process("sound")
             self._start_process(
-                "voice", [self.ros2, "run", "jarvis_voice", "jarvis_node"]
+                "voice",
+                [
+                    self.ros2,
+                    "run",
+                    "jarvis_voice",
+                    "jarvis_node",
+                    "--ros-args",
+                    "-p",
+                    "disable_microphone:=true",
+                ],
             )
             self._start_process(
                 "air", [self.ros2, "run", "jarvis_voice", "air_sensor_node"]
-            )
-            self._start_process(
-                "sound", [self.ros2, "run", "jobot_mic", "myagv_mic_node"]
             )
             self._start_process(
                 "ui",
                 [self.ros2, "run", "wheeltec_ui_dashboard", "ui_dashboard"],
             )
             self._publish_string(self.air_control_pub, "LINKAGE_ON")
-            self._publish_status(
-                "ready", "模式一已就绪：声源定位、语音交互和安全预警"
-            )
+            self._publish_status("ready", "")
         elif mode == "water":
+            self._stop_process("announce")
             self._stop_process("sound")
-            self._stop_process("ui")
             self._stop_process("air")
+            self._stop_process("voice")
             self._publish_string(self.air_control_pub, "LINKAGE_OFF")
             self._publish_string(self.esp32_control_pub, "ALARM_OFF")
             self._publish_string(self.esp32_control_pub, "FAN_OFF")
+            self._publish_string(self.esp32_control_pub, "LIGHT_OFF")
             self._start_process(
-                "voice", [self.ros2, "run", "jarvis_voice", "jarvis_node"]
+                "ui",
+                [self.ros2, "run", "wheeltec_ui_dashboard", "ui_dashboard"],
+            )
+            self._start_process(
+                "care", [self.ros2, "run", "jarvis_voice", "care_demo_node"]
             )
             arm_started = self._start_process(
                 "arm", [self.ros2, "run", "wheeltec_arm_control", "arm_control"]
@@ -267,20 +345,83 @@ class NavigationManager(Node):
             )
         else:
             self._publish_string(self.patrol_control_pub, "STOP")
-            for key in ("sound", "ui", "air", "voice", "vision", "arm"):
+            for key in ("sound", "voice", "care", "vision", "arm", "announce"):
                 self._stop_process(key)
             self._publish_string(self.air_control_pub, "LINKAGE_OFF")
             self._publish_string(self.esp32_control_pub, "ALARM_OFF")
             self._publish_string(self.esp32_control_pub, "FAN_OFF")
+            self._publish_string(self.esp32_control_pub, "LIGHT_OFF")
+            self._start_process(
+                "ui",
+                [self.ros2, "run", "wheeltec_ui_dashboard", "ui_dashboard"],
+            )
+            self._start_process(
+                "air",
+                [
+                    self.ros2,
+                    "run",
+                    "jarvis_voice",
+                    "air_sensor_node",
+                    "--ros-args",
+                    "-p",
+                    "linkage_enabled:=false",
+                ],
+            )
+            self._publish_string(self.air_control_pub, "LINKAGE_OFF")
+            self._start_process(
+                "announce",
+                [self.ros2, "run", "jarvis_voice", "announcement_node"],
+            )
             self._publish_status(
-                "switching", "正在进入模式三：仅启动雷达定位与巡查导航"
+                "switching", "正在进入模式三：启动环境监测、雷达定位与巡查导航"
             )
             self._start_navigation()
 
         self.get_logger().info(f"比赛模式切换：{previous_mode} -> {mode}")
 
+    def _enable_live_interaction(self):
+        """Enable the microphone and sound localization only on explicit request."""
+        if self.current_mode != "interaction":
+            self.get_logger().warning("麦克风和声源定位仅允许在功能一启动")
+            return
+
+        # 语音节点常驻以保留固定演示能力；点击后在进程内开启麦克风，避免
+        # 重载语音/AI 依赖造成十几秒空窗。重复发布覆盖用户刚开机就点击、
+        # DDS 订阅尚未发现的情况，语音节点收到后会幂等处理。
+        self.live_interaction_enabled = True
+        sound_started = self._start_process(
+            "sound", [self.ros2, "run", "jobot_mic", "myagv_mic_node"]
+        )
+        voice_started = self._process_running("voice") or self._start_process(
+            "voice",
+            [
+                self.ros2,
+                "run",
+                "jarvis_voice",
+                "jarvis_node",
+                "--ros-args",
+                "-p",
+                "disable_microphone:=true",
+            ],
+        )
+        self.voice_enable_repeats = 80
+        self._publish_string(self.voice_control_pub, "ENABLE_LIVE_INTERACTION")
+        if sound_started and voice_started:
+            self.get_logger().info("功能一麦克风与声源定位已启动")
+        else:
+            self.get_logger().error("功能一麦克风或声源定位启动失败")
+
     def _monitor(self):
         self._check_processes()
+
+        if self.voice_enable_repeats > 0:
+            if self.current_mode == "interaction" and self.live_interaction_enabled:
+                self._publish_string(
+                    self.voice_control_pub, "ENABLE_LIVE_INTERACTION"
+                )
+                self.voice_enable_repeats -= 1
+            else:
+                self.voice_enable_repeats = 0
 
         if self.state == "starting":
             if self.navigator.server_is_ready():
@@ -322,7 +463,7 @@ class NavigationManager(Node):
             if started:
                 self._publish_status(
                     "ready",
-                    "模式二已就绪：语音、底盘、机械臂抓取和视觉识别",
+                    "模式二已就绪：底盘、机械臂抓取、视觉识别和递水演示对话",
                 )
             else:
                 self._publish_status("error", "模式二启动失败：视觉节点无法启动")
@@ -353,7 +494,11 @@ class NavigationManager(Node):
 
     def _begin_origin_localization(self):
         self.state = "localizing"
-        if self.last_odom_pose is None:
+        if self.pending_initial_pose is not None:
+            self.initial_map_pose = self.pending_initial_pose
+            self.pending_initial_pose = None
+            self.get_logger().info("正在应用手机设置的地图初始位置")
+        elif self.last_odom_pose is None:
             self.initial_map_pose = (0.0, 0.0, 0.0)
             self.get_logger().warning(
                 "尚未收到 /odom_combined，AMCL 暂按建图原点初始化"
@@ -362,7 +507,7 @@ class NavigationManager(Node):
             # 比赛开机时 odom 与新比赛地图的 (0, 0, 0) 对齐。导航启动前
             # 声源定位可能已让底盘旋转或移动，必须保留这段里程计变化；若仍
             # 强制写回零位，规划方向就会与实车方向相反并出现转圈、撞墙。
-            self.initial_map_pose = self.last_odom_pose
+                self.initial_map_pose = self.last_odom_pose
         x, y, yaw = self.initial_map_pose
         self.message = (
             "Nav2 已启动，正在等待 AMCL 确认当前位置"
@@ -459,7 +604,7 @@ class NavigationManager(Node):
                 "navigation_unavailable",
             }:
                 self._publish_status("error", f"导航进程已退出，代码 {exit_code}")
-            elif key in {"arm", "vision", "sound", "ui", "voice", "air"} and exit_code != 0:
+            elif key in {"arm", "vision", "sound", "ui", "voice", "announce", "care", "air"} and exit_code != 0:
                 self.get_logger().warning(
                     f"{self.process_labels[key]}进程已退出，代码 {exit_code}"
                 )
@@ -643,7 +788,9 @@ class NavigationManager(Node):
     def destroy_node(self):
         # Nav2 最重且会产生容器子进程，必须最先关闭，确保在 ros2 launch
         # 的关闭宽限期内收干净，避免下次启动误用孤儿 action server。
-        for key in ("nav", "vision", "arm", "air", "voice", "ui", "sound"):
+        for key in (
+            "nav", "vision", "arm", "air", "voice", "announce", "care", "ui", "sound"
+        ):
             self._stop_process(key)
         self.navigation_mode = False
         if rclpy.ok():

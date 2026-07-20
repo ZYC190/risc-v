@@ -1,0 +1,7 @@
+#!/bin/bash
+set -e
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+VENV_PYTHON="${JARVIS_PYTHON:-/home/zyc/demo-env/bin/python3}"
+
+exec "$VENV_PYTHON" "$SCRIPT_DIR/care_demo_node.py" "$@"

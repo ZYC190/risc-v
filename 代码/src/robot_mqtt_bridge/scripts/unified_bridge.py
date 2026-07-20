@@ -3,6 +3,7 @@
 
 import json
 import math
+import os
 import time
 
 import paho.mqtt.client as mqtt
@@ -12,6 +13,12 @@ from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
 from sensor_msgs.msg import JointState
 from std_msgs.msg import String
+
+
+ARM_OFFSETS_FILE = os.environ.get(
+    "ROBOT_ARM_OFFSETS_FILE",
+    "/home/zyc/robot2/config/arm_grab_offsets.json",
+)
 
 
 ARM_PLAIN_COMMANDS = {
@@ -116,9 +123,10 @@ class UnifiedMqttBridge(Node):
         self.navigation_mode = False
         self.arm_offsets = {
             "x_offset": -0.07,
-            "y_offset": -0.03,
+            "y_offset": -0.05,
             "z_offset": 0.05,
         }
+        self._load_arm_offsets()
         self.mqtt_connected = False
         self.shutting_down = False
 
@@ -137,6 +145,53 @@ class UnifiedMqttBridge(Node):
         self.get_logger().info("统一 MQTT-ROS2 桥接节点已启动")
         self.get_logger().info(f"MQTT Broker: {self.broker}:{self.port}")
         self.get_logger().info("已启用：底盘、语音、机械臂、ESP32 控制与状态回传")
+
+    @staticmethod
+    def _valid_arm_offsets(offsets):
+        return all(
+            math.isfinite(value) and -0.5 <= value <= 0.5
+            for value in offsets.values()
+        )
+
+    def _load_arm_offsets(self):
+        try:
+            with open(ARM_OFFSETS_FILE, "r", encoding="utf-8") as stream:
+                data = json.load(stream)
+            offsets = {
+                key: float(data[key])
+                for key in ("x_offset", "y_offset", "z_offset")
+            }
+            if not self._valid_arm_offsets(offsets):
+                raise ValueError("偏移超出 -0.5 到 0.5 米范围")
+            self.arm_offsets = offsets
+            self.get_logger().info(
+                f"已加载持久化机械臂抓取参数: {ARM_OFFSETS_FILE}"
+            )
+        except FileNotFoundError:
+            self.get_logger().info("尚无持久化机械臂抓取参数，使用程序默认值")
+        except (OSError, KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
+            self.get_logger().warning(
+                f"读取持久化机械臂抓取参数失败，使用程序默认值: {exc}"
+            )
+
+    def _save_arm_offsets(self):
+        temp_file = f"{ARM_OFFSETS_FILE}.tmp.{os.getpid()}"
+        try:
+            os.makedirs(os.path.dirname(ARM_OFFSETS_FILE), exist_ok=True)
+            with open(temp_file, "w", encoding="utf-8") as stream:
+                json.dump(self.arm_offsets, stream, ensure_ascii=False, indent=2)
+                stream.flush()
+                os.fsync(stream.fileno())
+            os.replace(temp_file, ARM_OFFSETS_FILE)
+            self.get_logger().info("机械臂抓取参数已持久化保存")
+            return True
+        except OSError as exc:
+            self.get_logger().error(f"持久化机械臂抓取参数失败: {exc}")
+            try:
+                os.unlink(temp_file)
+            except OSError:
+                pass
+            return False
 
     def _on_mqtt_connect(self, client, userdata, flags, reason_code, properties):
         if reason_code != 0:
@@ -157,6 +212,7 @@ class UnifiedMqttBridge(Node):
         for topic in topics:
             client.subscribe(topic)
         self.get_logger().info("MQTT 已连接，7 个控制/状态主题订阅成功")
+        self._publish_arm_offsets_status()
 
     def _on_mqtt_disconnect(
         self, client, userdata, disconnect_flags, reason_code, properties
@@ -251,6 +307,22 @@ class UnifiedMqttBridge(Node):
             )
         )
 
+    def _publish_arm_offsets_status(self):
+        if not self.mqtt_connected:
+            return
+        payload = json.dumps(
+            {
+                "event": "arm_offsets",
+                **self.arm_offsets,
+                "message": "机械臂抓取参数已同步",
+                "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+            },
+            ensure_ascii=False,
+        )
+        self.mqtt_client.publish(
+            self.arm_status_topic, payload, qos=0, retain=True
+        )
+
     def _handle_arm(self, payload):
         plain_command = payload.strip().upper()
         if plain_command in ARM_PLAIN_COMMANDS:
@@ -266,6 +338,12 @@ class UnifiedMqttBridge(Node):
             return
 
         command_type = str(data.get("type", "")).strip().lower()
+        if command_type in {"get_offsets", "query_offsets", "sync_offsets"}:
+            # The bridge survives water-mode arm restarts and is the source of
+            # truth. Reapply its saved values before reporting them to the app.
+            self._publish_arm_offsets()
+            self._publish_arm_offsets_status()
+            return
         command_map = {
             "grab_bottle": "GRAB_BOTTLE",
             "vision_grab": "GRAB_BOTTLE",
@@ -301,7 +379,9 @@ class UnifiedMqttBridge(Node):
                 self.get_logger().warning("机械臂抓取偏移必须在 -0.5 到 0.5 米之间")
                 return
             self.arm_offsets = offsets
+            self._save_arm_offsets()
             self._publish_arm_offsets()
+            self._publish_arm_offsets_status()
             return
 
         angles = data.get("angles")
@@ -397,10 +477,14 @@ class UnifiedMqttBridge(Node):
             "STOP",
             "STATUS",
             "RESET_ORIGIN",
+            "SET_INITIAL_POSE",
             "SET_MODE",
             "MODE_INTERACTION",
             "MODE_WATER",
             "MODE_PATROL",
+            "DEMO_INTRO_WEATHER",
+            "DEMO_HOME_ENVIRONMENT",
+            "ENABLE_VOICE_INTERACTION",
         }:
             self.get_logger().warning(f"不支持的导航系统指令：{command}")
             return
@@ -454,8 +538,36 @@ class UnifiedMqttBridge(Node):
         message = msg.data.strip()
         if not message:
             return
-        if "已识别到瓶子" in message or "目标坐标平均完成" in message:
+        try:
+            structured = json.loads(message)
+        except (json.JSONDecodeError, TypeError):
+            structured = None
+        if (
+            isinstance(structured, dict)
+            and str(structured.get("event", "")).lower() == "arm_offsets"
+        ):
+            try:
+                offsets = {
+                    key: float(structured[key])
+                    for key in ("x_offset", "y_offset", "z_offset")
+                }
+            except (KeyError, TypeError, ValueError):
+                self.get_logger().warning("机械臂回传的抓取参数格式无效")
+                return
+            self.arm_offsets = offsets
+            self._save_arm_offsets()
+            self._publish_arm_offsets_status()
+            return
+        if "未发现水瓶" in message or "离开画面" in message:
+            event = "bottle_lost"
+            message = ""
+        elif message == "发现水瓶" or (
+            "瓶子" in message and "可以" in message and "点击" in message
+        ):
             event = "bottle_detected"
+            message = "发现水瓶"
+        elif "目标坐标平均完成" in message:
+            event = "target_confirmed"
         elif "演示完成" in message or "抓取成功" in message:
             event = "grab_completed"
         elif "失败" in message or "异常" in message:

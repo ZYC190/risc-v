@@ -34,6 +34,9 @@ class HomePatrolNode(Node):
         self.status_pub = self.create_publisher(
             String, str(self.get_parameter("status_topic").value), 10
         )
+        self.voice_announce_pub = self.create_publisher(
+            String, "/voice_announce", 10
+        )
         self.command_sub = self.create_subscription(
             String,
             str(self.get_parameter("command_topic").value),
@@ -73,6 +76,7 @@ class HomePatrolNode(Node):
         self.goal_started_at = 0.0
         self.best_position_distance = None
         self.progress_anchor_position = None
+        self.progress_anchor_yaw = None
         self.last_progress_at = 0.0
         self.near_goal_started_at = None
         self.near_goal_cancel_requested = False
@@ -375,10 +379,20 @@ class HomePatrolNode(Node):
         now = time.monotonic()
         feedback = feedback_msg.feedback
         current_position = feedback.current_pose.pose.position
+        current_orientation = feedback.current_pose.pose.orientation
         self.last_robot_position = (
             float(current_position.x),
             float(current_position.y),
         )
+        sin_yaw = 2.0 * (
+            current_orientation.w * current_orientation.z
+            + current_orientation.x * current_orientation.y
+        )
+        cos_yaw = 1.0 - 2.0 * (
+            current_orientation.y * current_orientation.y
+            + current_orientation.z * current_orientation.z
+        )
+        current_yaw = math.atan2(sin_yaw, cos_yaw)
         waypoint = self.waypoints[self.current_index]
         position_distance = math.hypot(
             float(current_position.x) - waypoint["x"],
@@ -393,10 +407,9 @@ class HomePatrolNode(Node):
             self.best_position_distance = position_distance
             position_progressed = True
 
-        # Count meaningful motion in any direction as progress.  This keeps a
-        # legitimate detour, recovery backup, or side-step from being canceled
-        # just because its straight-line distance to the goal is temporarily
-        # flat or increasing.
+        # Count meaningful translation or rotation as progress. A goal behind
+        # the robot may require a long in-place turn before any XY movement;
+        # canceling that turn as a stall makes otherwise reachable points fail.
         current_xy = self.last_robot_position
         motion_progressed = False
         if self.progress_anchor_position is None:
@@ -408,7 +421,23 @@ class HomePatrolNode(Node):
             self.progress_anchor_position = current_xy
             motion_progressed = True
 
-        if position_progressed or motion_progressed:
+        rotation_progressed = False
+        if self.progress_anchor_yaw is None:
+            self.progress_anchor_yaw = current_yaw
+        else:
+            yaw_delta = abs(
+                math.atan2(
+                    math.sin(current_yaw - self.progress_anchor_yaw),
+                    math.cos(current_yaw - self.progress_anchor_yaw),
+                )
+            )
+            # About 7 degrees is well above AMCL yaw jitter while still
+            # refreshing the watchdog during a deliberate in-place turn.
+            if yaw_delta >= 0.12:
+                self.progress_anchor_yaw = current_yaw
+                rotation_progressed = True
+
+        if position_progressed or motion_progressed or rotation_progressed:
             self.last_progress_at = now
 
         arrival_tolerance = self._current_arrival_tolerance()
@@ -487,6 +516,7 @@ class HomePatrolNode(Node):
 
     def _begin_inspection(self, accepted_near_goal=False):
         self.retry_count = 0
+        self._announce_safe_arrival()
         message = f"已到达{self._room_name()}，正在检查"
         self._publish_status(
             "inspecting",
@@ -501,6 +531,42 @@ class HomePatrolNode(Node):
         self.inspection_timer = self.create_timer(
             self.inspection_seconds, self._finish_inspection
         )
+
+    @staticmethod
+    def _spoken_location_name(name):
+        """Use competition-friendly Chinese names for phone-defined points."""
+        clean_name = str(name).strip()
+        compact_name = clean_name.replace(" ", "")
+        prefixes = ("巡查点", "PatrolPoint")
+        point_number = None
+        for prefix in prefixes:
+            if compact_name.lower().startswith(prefix.lower()):
+                suffix = compact_name[len(prefix):]
+                if suffix.isdigit():
+                    point_number = int(suffix)
+                break
+        if point_number is None:
+            return clean_name
+
+        digits = "零一二三四五六七八九"
+        if 0 <= point_number < 10:
+            spoken_number = digits[point_number]
+        elif point_number < 20:
+            spoken_number = "十" + (digits[point_number % 10] if point_number % 10 else "")
+        elif point_number < 100:
+            spoken_number = digits[point_number // 10] + "十"
+            if point_number % 10:
+                spoken_number += digits[point_number % 10]
+        else:
+            spoken_number = str(point_number)
+        return f"自定义点{spoken_number}"
+
+    def _announce_safe_arrival(self):
+        location = self._spoken_location_name(self._room_name())
+        msg = String()
+        msg.data = f"已到达{location}，环境数据正常，{location}安全。"
+        self.voice_announce_pub.publish(msg)
+        self.get_logger().info(f"请求机器人环境巡查到达播报: {msg.data}")
 
     def _watch_navigation(self):
         if (
@@ -556,6 +622,7 @@ class HomePatrolNode(Node):
         self.goal_started_at = 0.0
         self.best_position_distance = None
         self.progress_anchor_position = None
+        self.progress_anchor_yaw = None
         self.last_progress_at = 0.0
         self.near_goal_started_at = None
         self.near_goal_cancel_requested = False

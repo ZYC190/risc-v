@@ -15,21 +15,28 @@ source /opt/ros/humble/setup.bash
 source "${ROBOT_ROOT}/install/setup.bash"
 set -u
 
-if ! topic_info="$(timeout 8 ros2 topic info /map --verbose 2>/dev/null)"; then
-    echo "ERROR: unable to inspect /map; keep SLAM running while saving." >&2
+# Fast DDS graph discovery on this K1 intermittently reports zero publishers
+# or NODE_NAME_UNKNOWN while /map is healthy.  Validate the real local SLAM
+# processes instead; map_saver below remains the authoritative data probe and
+# will fail safely if it cannot actually receive an OccupancyGrid.
+mapfile -t slam_pids < <(
+    {
+        pgrep -u "$(id -u)" -f '[/]slam_gmapping/.*/slam_gmapping([[:space:]]|$)' || true
+        pgrep -u "$(id -u)" -f '[/]cartographer_ros/.*/occupancy_grid_node([[:space:]]|$)' || true
+    } | sort -un
+)
+if [[ ${#slam_pids[@]} -ne 1 ]]; then
+    echo "ERROR: exactly one supported SLAM map process is required; found ${#slam_pids[@]}." >&2
+    echo "Keep one gmapping or Cartographer session running while saving." >&2
     exit 1
 fi
-publisher_count="$(awk '/Publisher count:/ {print $3}' <<<"${topic_info}")"
-[[ "${publisher_count}" == "1" ]] \
-    || { echo "ERROR: /map must have exactly one publisher, found ${publisher_count:-unknown}." >&2; exit 1; }
-publisher_node="$(awk '/Node name:/ {node=$3} /Endpoint type: PUBLISHER/ {print node; exit}' <<<"${topic_info}")"
-case "${publisher_node}" in
-    slam_gmapping|occupancy_grid_node) ;;
-    *)
-        echo "ERROR: /map publisher ${publisher_node:-unknown} is not an active supported SLAM node." >&2
-        exit 1
-        ;;
-esac
+
+# A static Nav2 map server alongside SLAM can race the saver with an old map.
+if pgrep -u "$(id -u)" -f '[/]nav2_map_server/.*/map_server([[:space:]]|$)' >/dev/null; then
+    echo "ERROR: a static Nav2 map_server is running alongside SLAM." >&2
+    echo "Stop navigation before saving the live SLAM map." >&2
+    exit 1
+fi
 
 mkdir -p "${MAP_DIR}" "${BACKUP_ROOT}"
 command -v flock >/dev/null 2>&1 \

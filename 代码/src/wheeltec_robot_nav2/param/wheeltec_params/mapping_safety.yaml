@@ -28,9 +28,12 @@ collision_monitor:
     source_timeout: 0.5
     base_shift_correction: true
     stop_pub_timeout: 1.0
-    polygons: ["FootprintApproach", "PolygonSlow"]
-    # During pure SLAM there is no local_costmap/published_footprint.  Use a
-    # static circle enclosing the 0.270 m x 0.222 m chassis instead.
+    # Manual SLAM must remain steerable near walls.  Keep the outer slowdown
+    # zone, but do not use the predictive hard-stop footprint in this mode.
+    # Forward speed remains capped at 0.15 m/s and reverse/lateral stay off.
+    polygons: ["PolygonSlow"]
+    # Retained as a documented, disabled emergency profile.  Navigation mode
+    # continues to use its independent collision-monitor configuration.
     FootprintApproach:
       type: "circle"
       radius: 0.22
@@ -40,7 +43,7 @@ collision_monitor:
       max_points: 3
       visualize: true
       polygon_pub_topic: "mapping_footprint_approach"
-      enabled: true
+      enabled: false
     PolygonSlow:
       type: "polygon"
       points: [0.45, 0.26, 0.45, -0.26, -0.30, -0.26, -0.30, 0.26]

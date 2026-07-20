@@ -160,15 +160,15 @@ controller_server:
       batch_size: 250   #轻量采样，避免控制循环因算力不足而丢周期
       vx_std: 0.12
       vy_std: 0.0       #导航禁用横移采样，避免地图斜移而实车主要前进
-      wz_std: 0.25
+      wz_std: 0.35
       vx_max: 0.30
       vx_min: 0.0       #后向激光被屏蔽，导航和恢复均禁止倒车
       vy_max: 0.0        #导航只允许先转向再前进；手机手动横移不受影响
-      wz_max: 0.55      #限制转圈速度，比赛围挡内更稳定
+      wz_max: 0.70      #加快路径起步转向，仍低于速度平滑器0.8 rad/s上限
       ax_max: 0.6
       ax_min: -0.8
       ay_max: 0.0
-      az_max: 0.8
+      az_max: 1.0
       iteration_count: 1 #迭代次数
       prune_distance: 0.8 #小地图只保留近处路径，减少无效计算
       enforce_path_inversion: false

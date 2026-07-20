@@ -36,6 +36,13 @@ source /opt/ros/humble/setup.bash
 source install/setup.bash
 set -u
 
+# Keep the USB speaker loud enough for competition demonstrations.  Baidu TTS
+# already uses its maximum volume; this mixer level raises the actual speaker
+# output while leaving headroom to avoid the distortion of a 100% setting.
+if ! amixer -q sset PCM 80% unmute; then
+    echo "WARNING: unable to set USB speaker volume; continuing with current level." >&2
+fi
+
 # ros2 launch must be detached from the SSH output pipe.  The child inherits
 # FD 9 and therefore owns the robot mode lock for its full lifetime.
 if [[ -f "${LOG_FILE}" ]]; then

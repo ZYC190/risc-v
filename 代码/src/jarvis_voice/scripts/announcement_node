@@ -1,0 +1,12 @@
+#!/bin/bash
+set -e
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+VENV_PYTHON="${JARVIS_PYTHON:-/home/zyc/demo-env/bin/python3}"
+
+if [ ! -x "$VENV_PYTHON" ]; then
+  echo "错误：找不到语音虚拟环境 Python：$VENV_PYTHON" >&2
+  exit 1
+fi
+
+exec "$VENV_PYTHON" "$SCRIPT_DIR/announcement_node.py" "$@"

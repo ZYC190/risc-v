@@ -173,14 +173,18 @@ if [[ "${MODE}" == "mapping" || "${MODE}" == "navigation" ]]; then
         exit 1
     fi
 
-    if ! topic_list="$(timeout 8 ros2 topic list 2>/dev/null)"; then
+    # Do not use the long-lived ros2 daemon here.  After Nav2 exits uncleanly,
+    # its cache can retain anonymous /cmd_vel endpoints even though every
+    # publisher process is gone.  A fresh direct DDS query keeps the safety
+    # check strict without rejecting harmless stale daemon records.
+    if ! topic_list="$(timeout 10 ros2 topic list --no-daemon --spin-time 2 2>/dev/null)"; then
         fail "ROS graph query failed; refusing to assume the velocity topics are idle"
     fi
     for velocity_topic in /cmd_vel /cmd_vel_nav /cmd_vel_raw; do
         if ! grep -Fxq "${velocity_topic}" <<<"${topic_list}"; then
             continue
         fi
-        if ! topic_info="$(timeout 5 ros2 topic info "${velocity_topic}" 2>/dev/null)"; then
+        if ! topic_info="$(timeout 10 ros2 topic info "${velocity_topic}" --no-daemon --spin-time 2 2>/dev/null)"; then
             fail "unable to inspect existing topic ${velocity_topic}"
         fi
         publisher_count="$(awk '/Publisher count:/ {print $3}' <<<"${topic_info}")"
@@ -191,7 +195,7 @@ if [[ "${MODE}" == "mapping" || "${MODE}" == "navigation" ]]; then
     done
 
     if grep -Fxq '/map' <<<"${topic_list}"; then
-        if ! map_info="$(timeout 5 ros2 topic info /map 2>/dev/null)"; then
+        if ! map_info="$(timeout 10 ros2 topic info /map --no-daemon --spin-time 2 2>/dev/null)"; then
             fail "unable to inspect existing /map topic"
         fi
         map_publishers="$(awk '/Publisher count:/ {print $3}' <<<"${map_info}")"

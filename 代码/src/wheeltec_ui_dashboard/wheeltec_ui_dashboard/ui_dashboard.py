@@ -48,6 +48,7 @@ from PyQt5.QtWidgets import (
     QScrollArea,
     QScroller,
     QStyle,
+    QMessageBox,
 )
 from PyQt5.QtCore import QEvent, QTimer, Qt, QThread, pyqtSignal
 from PyQt5.QtGui import QFont, QImage, QPixmap, QPainter, QBrush, QColor, QPen
@@ -286,6 +287,7 @@ class Ros2EngineThread(QThread):
     voice_log_signal = pyqtSignal(str)
     status_signal = pyqtSignal(str, str)
     arm_log_signal = pyqtSignal(str)
+    mode_signal = pyqtSignal(str)
 
     def __init__(self):
         super().__init__()
@@ -308,6 +310,12 @@ class Ros2EngineThread(QThread):
         self.node.create_subscription(String, "/actionstatus", self.action_status_callback, 10)
         self.node.create_subscription(String, "/arm_status", self.arm_status_callback, 10)
         self.node.create_subscription(String, "/esp32_status", self.esp32_status_callback, 10)
+        self.node.create_subscription(
+            String,
+            "/home/navigation/system_status",
+            self.navigation_system_status_callback,
+            10,
+        )
 
         self.goal_pub = self.node.create_publisher(PoseStamped, "/goal_pose", 10)
         self.esp32_pub = self.node.create_publisher(String, "/esp32_cmd", 10)
@@ -363,6 +371,15 @@ class Ros2EngineThread(QThread):
 
     def esp32_status_callback(self, msg):
         self.status_signal.emit("esp32", msg.data[:24])
+
+    def navigation_system_status_callback(self, msg):
+        try:
+            payload = json.loads(msg.data)
+            mode = str(payload.get("mode", "interaction")).strip().lower()
+        except (json.JSONDecodeError, AttributeError, TypeError):
+            return
+        if mode in ("interaction", "water", "patrol"):
+            self.mode_signal.emit(mode)
 
     def send_goal(self, target_x, target_y, oz=0.0, ow=1.0):
         goal_msg = PoseStamped()
@@ -706,16 +723,37 @@ class AnimatedEyesWidget(QWidget):
         self.setAttribute(Qt.WA_AcceptTouchEvents, True)
         self.timer = QTimer(self)
         self.timer.timeout.connect(self.tick)
-        self.timer.start(33)
+        # 15 FPS keeps the eyes visibly fluid while leaving CPU for vision/Nav2.
+        self.timer.start(66)
+
+    def set_animation_enabled(self, enabled):
+        """Animate only in interaction mode; other modes show static eyes."""
+        enabled = bool(enabled)
+        if enabled:
+            if not self.timer.isActive():
+                self.timer.start(66)
+        else:
+            self.timer.stop()
+            self.t = 0.0
+            self.blink = 1.0
+            self.update()
 
     def tick(self):
-        self.t += 0.055
+        self.t += 0.11
         phase = self.t % 6.4
         if 5.72 <= phase <= 6.08:
             self.blink = max(0.05, min(1.0, abs(phase - 5.90) / 0.18))
         else:
             self.blink = 1.0
-        self.update()
+        # The background never changes.  Repaint only the horizontal eye band
+        # instead of the whole framebuffer so the software-rendered dashboard
+        # leaves substantially more CPU time for Nav2 and vision.
+        widget_h = self.height()
+        eye_h_base = min(int(widget_h * 0.48), 225)
+        center_y = widget_h * 0.48
+        top = max(0, int(center_y - eye_h_base / 2 - 28))
+        bottom = min(widget_h, int(center_y + eye_h_base / 2 + 28))
+        self.update(0, top, self.width(), max(1, bottom - top))
 
     def mousePressEvent(self, event):
         if event.button() == Qt.LeftButton:
@@ -2347,6 +2385,8 @@ class CareRecordsPage(QWidget):
 class OSMainStage(QMainWindow):
     def __init__(self):
         super().__init__()
+        self._last_air_alert_level = "良好"
+        self._air_alert_box = None
         self.setWindowFlags(Qt.FramelessWindowHint | Qt.Window)
         self.setWindowTitle("家庭守护机器人")
         screen = QApplication.primaryScreen()
@@ -2417,11 +2457,79 @@ class OSMainStage(QMainWindow):
         self.ros_thread.air_data_signal.connect(
             self.family_status_page.update_environment
         )
+        self.ros_thread.air_data_signal.connect(self.handle_air_alert)
         self.ros_thread.voice_log_signal.connect(self.voice_page.append_log)
         self.ros_thread.voice_log_signal.connect(self.care_records_page.append_log)
         self.ros_thread.status_signal.connect(self.main_menu.update_status)
         self.ros_thread.status_signal.connect(self.family_status_page.update_status)
         self.ros_thread.arm_log_signal.connect(self.arm_page.append_log)
+        self.ros_thread.mode_signal.connect(self.handle_competition_mode)
+
+    def handle_competition_mode(self, mode):
+        # Control and patrol only need a friendly face, not a continuously
+        # repainted animation.  This makes their eye screen effectively a
+        # static image and gives all rendering CPU back to vision/Nav2.
+        self.eye_page.eyes.set_animation_enabled(mode == "interaction")
+
+    def handle_air_alert(self, data_dict):
+        """Show one touchscreen popup for each new air-quality alert."""
+        level = str(data_dict.get("等级", "")).strip()
+        if level not in ("一般", "异常"):
+            had_active_alert = (
+                self._last_air_alert_level in ("一般", "异常")
+                or self._air_alert_box is not None
+            )
+            self._last_air_alert_level = "良好"
+            if had_active_alert:
+                if self._air_alert_box is not None:
+                    self._air_alert_box.done(QMessageBox.Ok)
+                QTimer.singleShot(0, self.return_to_eyes)
+            return
+
+        # /air_sensor_data is published repeatedly.  Do not cover the screen
+        # with the same warning every second; a normal reading rearms it.
+        if self._last_air_alert_level == level:
+            return
+        self._last_air_alert_level = level
+
+        reasons = data_dict.get("异常项") or data_dict.get("提醒项") or []
+        reason_text = "；".join(str(item) for item in reasons)
+        if not reason_text:
+            reason_text = "检测到家庭空气质量异常"
+        advice = str(data_dict.get("建议") or "请立即通风并检查异常来源。")
+
+        # Open the detailed safety page behind the popup so the live values
+        # are immediately visible after the user acknowledges the warning.
+        self.stacked_widget.setCurrentWidget(self.air_page)
+        self.inactivity_timer.stop()
+
+        if self._air_alert_box is not None:
+            self._air_alert_box.close()
+
+        icon = QMessageBox.Critical if level == "异常" else QMessageBox.Warning
+        box = QMessageBox(icon, "家庭空气安全预警", f"{reason_text}\n\n{advice}", QMessageBox.Ok, self)
+        box.setWindowModality(Qt.ApplicationModal)
+        box.setWindowFlags(
+            box.windowFlags() | Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint
+        )
+        box.setStyleSheet(
+            f"QMessageBox {{ background:{PANEL}; }}"
+            f"QLabel {{ color:{TEXT}; font-size:22px; font-weight:700; min-width:520px; }}"
+            f"QPushButton {{ background:{RED}; color:white; border:0; border-radius:9px; "
+            "font-size:20px; font-weight:800; min-width:180px; min-height:54px; }}"
+        )
+        ok_button = box.button(QMessageBox.Ok)
+        if ok_button is not None:
+            ok_button.setText("我知道了")
+        box.finished.connect(self._air_alert_closed)
+        self._air_alert_box = box
+        box.show()
+        box.raise_()
+        box.activateWindow()
+
+    def _air_alert_closed(self, _result):
+        self._air_alert_box = None
+        self.inactivity_timer.start()
 
     def open_module(self, module_name):
         page = self.module_pages.get(module_name)
@@ -2475,6 +2583,13 @@ class OSMainStage(QMainWindow):
 
 
 def main(args=None):
+    # The touchscreen is decorative during navigation.  Lower its scheduler
+    # priority so localization/controller processes always win under load.
+    try:
+        os.nice(10)
+    except (AttributeError, OSError):
+        pass
+
     app = QApplication(sys.argv)
     app.setFont(QFont("Microsoft YaHei", 10))
     window = OSMainStage()
