@@ -485,6 +485,10 @@ class UnifiedMqttBridge(Node):
             "DEMO_INTRO_WEATHER",
             "DEMO_HOME_ENVIRONMENT",
             "ENABLE_VOICE_INTERACTION",
+            "CAMERA_START",
+            "START_CAMERA",
+            "CAMERA_STOP",
+            "STOP_CAMERA",
         }:
             self.get_logger().warning(f"不支持的导航系统指令：{command}")
             return

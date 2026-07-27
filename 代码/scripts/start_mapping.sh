@@ -38,23 +38,21 @@ trap - EXIT
 
 case "${MAPPER}" in
     gmapping)
-        echo "Mapping safety chain: cmd_vel_nav -> velocity_smoother -> collision_monitor -> cmd_vel"
-        echo "RPLIDAR 90-270 degree crop still requires physical-direction verification."
+        echo "Official mapping profile: direct cmd_vel, without the custom collision monitor."
         exec ros2 launch wheeltec_nav2 wheeltec_mapping.launch.py \
             mapper:=gmapping \
             start_base:=true \
             start_lidar:=true \
-            start_safety:=true \
+            start_safety:=false \
             lidar_type:=rplidar_c1
         ;;
     cartographer)
-        echo "Mapping safety chain: cmd_vel_nav -> velocity_smoother -> collision_monitor -> cmd_vel"
-        echo "RPLIDAR 90-270 degree crop still requires physical-direction verification."
+        echo "Official mapping profile: direct cmd_vel, without the custom collision monitor."
         exec ros2 launch wheeltec_nav2 wheeltec_mapping.launch.py \
             mapper:=cartographer \
             start_base:=true \
             start_lidar:=true \
-            start_safety:=true \
+            start_safety:=false \
             lidar_type:=rplidar_c1
         ;;
 esac

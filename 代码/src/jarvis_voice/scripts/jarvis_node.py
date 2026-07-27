@@ -68,6 +68,7 @@ def _load_local_secrets():
 _load_local_secrets()
 
 DEEPSEEK_API_KEY = os.environ.get("DEEPSEEK_API_KEY", "")
+DEEPSEEK_MODEL = os.environ.get("DEEPSEEK_MODEL", "deepseek-v4-flash")
 
 BAIDU_APP_ID = os.environ.get("BAIDU_APP_ID", "")
 BAIDU_API_KEY = os.environ.get("BAIDU_API_KEY", "")
@@ -141,16 +142,28 @@ def remove_think_tag(text):
 def extract_wake_command(text):
     """Return text after one Xiaowei-like prefix, or None if not woken."""
     normalized = re.sub(r"[\s，。！？、,.!?：:；;～~]+", "", str(text or ""))
-    for wake_prefix in WAKE_ALIASES:
-        if not normalized.startswith(wake_prefix):
-            continue
-        command = normalized[len(wake_prefix):]
-        # 兼容原来的“小薇小薇”，但不再强制必须重复呼叫。
-        for repeated_prefix in WAKE_ALIASES:
-            if command.startswith(repeated_prefix):
-                command = command[len(repeated_prefix):]
-                break
-        return command
+    candidates = [normalized]
+    candidate = normalized
+    # 百度ASR偶尔把“小薇”前的起音重复成“小小微”或
+    # “小小小薇”。最多丢弃三个冗余“小”，但丢弃后仍必须
+    # 完整匹配小薇/小微等别名，避免把“小小年纪”当成唤醒。
+    for _ in range(3):
+        if not candidate.startswith("小小"):
+            break
+        candidate = candidate[1:]
+        candidates.append(candidate)
+
+    for candidate in candidates:
+        for wake_prefix in WAKE_ALIASES:
+            if not candidate.startswith(wake_prefix):
+                continue
+            command = candidate[len(wake_prefix):]
+            # 兼容原来的“小薇小薇”，但不再强制必须重复呼叫。
+            for repeated_prefix in WAKE_ALIASES:
+                if command.startswith(repeated_prefix):
+                    command = command[len(repeated_prefix):]
+                    break
+            return command
     return None
 
 
@@ -181,11 +194,11 @@ def baidu_tts(text):
 
 
 def play_audio_file(audio_file):
-    """播放音频（重采样48000Hz + 放大15dB）"""
+    """播放音频（重采样48000Hz + 放大8dB）"""
     try:
         if os.path.exists(audio_file):
             audio = AudioSegment.from_file(audio_file, parameters=["-loglevel", "quiet"])
-            fixed_audio = (audio + 15).set_frame_rate(48000)
+            fixed_audio = (audio + 8).set_frame_rate(48000)
             temp_play_file = tempfile.NamedTemporaryFile(delete=False, suffix='.wav')
             temp_play_file.close()
             fixed_audio.export(temp_play_file.name, format="wav")
@@ -255,6 +268,10 @@ class JarvisCommander(Node):
         self.air_data_max_age = float(os.environ.get("JARVIS_AIR_DATA_MAX_AGE", "30"))
         self.air_sensor_sub = self.create_subscription(
             String, '/air_sensor_data', self.air_sensor_callback, 10)
+        self.enable_base_rotation = (
+            os.environ.get("JARVIS_ENABLE_BASE_ROTATION", "true").strip().lower()
+            in {"1", "true", "yes", "on"}
+        )
 
         # 比赛功能一可完全关闭麦克风，只保留手机上的确定性演示触发。
         self.is_listening = not self.microphone_disabled
@@ -276,6 +293,8 @@ class JarvisCommander(Node):
         self.get_logger().info("🚀 融合版 Jarvis 启动！声源定位 + 唤醒词 + 机械臂 + 聊天")
         self.get_logger().info("🔗 GUI 语音面板联动已就绪 (/voice_log + /voice_trigger)")
         self.get_logger().info("🌿 已订阅室内环境数据 /air_sensor_data")
+        if not self.enable_base_rotation:
+            self.get_logger().info("🚫 未连接移动底盘，语音唤醒后跳过声源转向")
         if self.microphone_disabled:
             self.get_logger().info("🔇 比赛静默演示模式：麦克风采集已完全关闭")
         else:
@@ -590,14 +609,15 @@ class JarvisCommander(Node):
                 f"空气质量{level}。{advice}"
             )
 
-        summary = (
-            f"当前室内温度{temperature}摄氏度，湿度{humidity}%，"
-            f"二氧化碳{co2}ppm，PM2.5为{pm25}，甲醛{hcho}微克每立方米，"
-            f"空气质量{level}。"
+        if level == "良好":
+            return (
+                f"当前室内空气质量良好，温度{temperature}度，"
+                f"湿度{humidity}%，甲醛{hcho}，数据正常。"
+            )
+        return (
+            f"当前室内空气质量{level}，温度{temperature}度，"
+            f"湿度{humidity}%，甲醛{hcho}。{advice}"
         )
-        if advice and advice not in summary:
-            summary += advice
-        return summary
 
     # ==================== 声源定位回调 ====================
     def angle_callback(self, msg):
@@ -768,7 +788,7 @@ class JarvisCommander(Node):
                 )
                 self.speak_and_play(reply)
             elif command == "DEMO_HOME_ENVIRONMENT":
-                self.rotate_by_degrees(90.0, "向左")
+                self.rotate_by_degrees(-90.0, "向右")
                 reply = self.get_indoor_environment_reply("家里环境怎么样")
                 self.speak_and_play(reply)
         except Exception as exc:
@@ -856,6 +876,9 @@ class JarvisCommander(Node):
         if has_angle:
             self.get_logger().info(f"📍 {label}角度: {current_angle}°")
             self._send_voice_log(f"📍 {label}角度: {current_angle}°")
+        if not self.enable_base_rotation:
+            self.get_logger().info("⏱️ 当前为无底盘调试模式，已跳过声源转向等待")
+            return False
         return self.rotate_to_angle()
 
     # ==================== 机械臂控制 ====================
@@ -869,6 +892,7 @@ class JarvisCommander(Node):
     def speak_and_play(self, text, publish_dialogue=True):
         """发音模块：百度TTS合成 + 播放"""
         with self.speech_lock:
+            response_started_at = time.monotonic()
             clean_text = remove_think_tag(text).strip()
             if not clean_text:
                 return
@@ -879,23 +903,37 @@ class JarvisCommander(Node):
                 self._send_voice_log(f"🤖 AI: {clean_text}")
                 self._publish_care_dialogue("robot", clean_text)
 
+            tts_started_at = time.monotonic()
             audio_file = baidu_tts(clean_text)
+            tts_ms = int((time.monotonic() - tts_started_at) * 1000)
+            self.get_logger().info(f"⏱️ 语音合成耗时: {tts_ms} ms")
             if audio_file:
+                playback_started_at = time.monotonic()
                 play_audio_file(audio_file)
+                playback_ms = int((time.monotonic() - playback_started_at) * 1000)
+                self.get_logger().info(f"⏱️ 语音播放耗时: {playback_ms} ms")
+            response_ms = int((time.monotonic() - response_started_at) * 1000)
+            self.get_logger().info(f"⏱️ 合成并播放总耗时: {response_ms} ms")
             self.ignore_mic_until = time.time() + 1.5
 
     # ==================== DeepSeek 对话 ====================
     def ask_deepseek_api(self, prompt):
         """聊天模块：挂载天气时间，请求 DeepSeek"""
         global chat_history
+        started_at = time.monotonic()
         self.get_logger().info("🧠 正在呼叫 DeepSeek 思考...")
 
         current_time = datetime.datetime.now().strftime("%H点%M分")
+        weather_context = (
+            get_weather()
+            if any(word in prompt for word in ("天气", "下雨", "气温", "刮风"))
+            else "本轮未查询室外天气。"
+        )
         system_prompt = (
             f"你叫小微，是一台家庭服务型机器人，运行在K1 MUSE Pi Pro和ROS2系统上。时间：{current_time}。"
-            f"天气：{get_weather()}。"
+            f"天气：{weather_context}。"
             "你的职责是陪伴、看护、安全提醒、智能家居协助和简单生活服务。"
-            "回答要温柔、可靠、像家里的机器人管家；尽量用简短口语中文，不超过60字。"
+            "回答要温柔、可靠、像家里的机器人管家；只说一到两句，不超过30个汉字。"
             "如果用户提到危险、儿童看护、燃气、烟雾或一氧化碳，要优先提醒安全处理。"
         )
         chat_history[0]["content"] = system_prompt
@@ -906,13 +944,25 @@ class JarvisCommander(Node):
 
         try:
             response = client_llm.chat.completions.create(
-                model="deepseek-chat", messages=chat_history, stream=False
+                model=DEEPSEEK_MODEL,
+                messages=chat_history,
+                stream=False,
+                max_tokens=160,
             )
-            reply = response.choices[0].message.content
+            reply = str(response.choices[0].message.content or "").strip()
+            if not reply:
+                reply = "我已经听到了，请再说一次。"
+                self.get_logger().warning("⚠️ DeepSeek正文为空，已使用本地兜底回答")
             chat_history.append({"role": "assistant", "content": reply})
+            elapsed_ms = int((time.monotonic() - started_at) * 1000)
+            self.get_logger().info(f"⏱️ DeepSeek回复耗时: {elapsed_ms} ms")
             return reply
         except Exception as e:
             chat_history.pop()
+            elapsed_ms = int((time.monotonic() - started_at) * 1000)
+            self.get_logger().error(
+                f"⏱️ DeepSeek请求失败，耗时: {elapsed_ms} ms，错误: {e}"
+            )
             return "指挥官，我的云端大脑暂时掉线了。"
 
     # ==================== 百度 ASR 识别 ====================
@@ -988,9 +1038,41 @@ class JarvisCommander(Node):
     def start_continuous_listener(self):
         """校准一次麦克风，然后在后台持续采集语音。"""
         recognizer = sr.Recognizer()
-        recognizer.pause_threshold = 0.7
-        recognizer.non_speaking_duration = 0.5
-        mic_index = int(os.environ.get("JARVIS_MIC_INDEX", "3"))
+        recognizer.pause_threshold = float(
+            os.environ.get("JARVIS_PAUSE_THRESHOLD", "0.55")
+        )
+        recognizer.non_speaking_duration = float(
+            os.environ.get("JARVIS_NON_SPEAKING_DURATION", "0.35")
+        )
+        phrase_time_limit = float(
+            os.environ.get("JARVIS_PHRASE_TIME_LIMIT", "8")
+        )
+        mic_index_text = os.environ.get("JARVIS_MIC_INDEX", "").strip()
+        if mic_index_text:
+            mic_index = int(mic_index_text)
+        else:
+            microphone_names = sr.Microphone.list_microphone_names()
+            mic_index = next(
+                (
+                    index
+                    for index, name in enumerate(microphone_names)
+                    if "XFM-DP" in name.upper()
+                ),
+                None,
+            )
+            if mic_index is None:
+                mic_index = next(
+                    (
+                        index
+                        for index, name in enumerate(microphone_names)
+                        if "PIPEWIRE" in name.upper()
+                    ),
+                    None,
+                )
+        if mic_index is None:
+            raise RuntimeError(
+                "没有找到可用麦克风；请检查XFM-DP语音板USB音频设备"
+            )
         microphone = sr.Microphone(device_index=mic_index, sample_rate=16000)
 
         print("\n" + "=" * 45)
@@ -1006,7 +1088,13 @@ class JarvisCommander(Node):
         self.stop_background_listening = recognizer.listen_in_background(
             microphone,
             self.audio_capture_callback,
-            phrase_time_limit=10,
+            phrase_time_limit=phrase_time_limit,
+        )
+        self.get_logger().info(
+            "⏱️ 语音速度参数: "
+            f"停顿结束={recognizer.pause_threshold:.2f}s, "
+            f"尾部静音={recognizer.non_speaking_duration:.2f}s, "
+            f"单句上限={phrase_time_limit:.1f}s"
         )
         self.get_logger().info("🎧 后台持续监听已开启，可以随时说话")
         self._send_voice_log("🎧 小微持续监听中，可以随时说话")
@@ -1024,21 +1112,32 @@ class JarvisCommander(Node):
             self.get_logger().info("🔇 环境声已过滤，后台监听未中断")
             return
 
+        queued_at = time.monotonic()
+        audio_seconds = len(audio.frame_data) / max(
+            1, audio.sample_rate * audio.sample_width
+        )
+        self.get_logger().info(
+            f"⏱️ 一句话采集完成: {audio_seconds:.2f}s，开始排队识别"
+        )
+        queued_audio = (audio, queued_at)
         try:
-            self.audio_queue.put_nowait(audio)
+            self.audio_queue.put_nowait(queued_audio)
         except queue.Full:
             try:
                 self.audio_queue.get_nowait()
                 self.audio_queue.task_done()
             except queue.Empty:
                 pass
-            self.audio_queue.put_nowait(audio)
+            self.audio_queue.put_nowait(queued_audio)
             self.get_logger().warning("⚠️ 语音队列已满，已保留最新一句话")
 
     def decode_audio(self, audio):
         """在处理线程中调用百度 ASR，避免阻塞后台录音。"""
         self.get_logger().info("⏳ 百度云端语音解码中...")
+        started_at = time.monotonic()
         text = self.baidu_asr(audio.get_wav_data())
+        elapsed_ms = int((time.monotonic() - started_at) * 1000)
+        self.get_logger().info(f"⏱️ 百度ASR耗时: {elapsed_ms} ms")
         if not self.is_meaningful_text(text):
             if text:
                 self.get_logger().info(f"🔇 已过滤无意义识别结果: {text}")
@@ -1062,6 +1161,8 @@ class JarvisCommander(Node):
         environment_keywords = [
             "室内环境", "屋里环境", "家里环境", "环境如何", "环境怎么样",
             "环境安全吗", "空气质量", "空气安全吗", "室内空气",
+            "家里情况", "家中情况", "家庭情况", "家里怎么样",
+            "家中怎么样", "家里安全吗", "家中安全吗",
             "室内温度", "室内湿度", "温度多少", "湿度多少",
             "二氧化碳", "CO2", "甲醛", "VOC", "PM2.5", "PM10", "颗粒物",
         ]
@@ -1069,6 +1170,20 @@ class JarvisCommander(Node):
             self.get_logger().info("🌿 检测到室内环境查询，读取七合一传感器实时数据")
             self._send_voice_log("🌿 正在读取室内环境传感器...")
             reply = self.get_indoor_environment_reply(cmd_text)
+            self.speak_and_play(reply)
+            return "handled"
+
+        movement_keywords = [
+            "向前", "往前", "前进", "向后", "往后", "后退",
+            "向左转", "左转", "向右转", "右转",
+            "停车", "停下", "停止移动",
+        ]
+        if any(keyword in clean_text for keyword in movement_keywords):
+            self.get_logger().info("🛞 检测到小车移动指令，使用本地安全处理")
+            if self.enable_base_rotation:
+                reply = "移动指令已识别，请在手机控制界面确认。"
+            else:
+                reply = "当前未连接底盘，暂时无法移动。"
             self.speak_and_play(reply)
             return "handled"
 
@@ -1131,11 +1246,19 @@ class JarvisCommander(Node):
                         continue
 
                     try:
-                        audio = self.audio_queue.get(timeout=0.5)
+                        queued_audio = self.audio_queue.get(timeout=0.5)
                     except queue.Empty:
                         continue
 
                     try:
+                        if (
+                            isinstance(queued_audio, tuple)
+                            and len(queued_audio) == 2
+                        ):
+                            audio, queued_at = queued_audio
+                        else:
+                            audio = queued_audio
+                            queued_at = time.monotonic()
                         while (
                             rclpy.ok()
                             and (
@@ -1151,6 +1274,13 @@ class JarvisCommander(Node):
                         cmd_text = self.decode_audio(audio)
                         if not cmd_text:
                             continue
+                        recognition_ms = int(
+                            (time.monotonic() - queued_at) * 1000
+                        )
+                        self.get_logger().info(
+                            f"⏱️ 录音结束到文字结果: {recognition_ms} ms，"
+                            f"识别内容: {cmd_text}"
+                        )
 
                         wake_command = extract_wake_command(cmd_text)
                         if wake_command is None:
@@ -1166,12 +1296,14 @@ class JarvisCommander(Node):
                         try:
                             self.get_logger().info("✅ 已识别小薇唤醒词")
                             self._send_voice_log("✅ 小薇已唤醒")
+                            self.ignore_mic_until = time.time() + 30.0
                             self.face_current_speaker("唤醒者")
                             if wake_command:
                                 self.handle_user_text(wake_command)
                             else:
                                 self.speak_and_play("我在，请说。")
                         finally:
+                            self._drain_audio_queue()
                             self.reset_voice_angle()
                     finally:
                         self.audio_queue.task_done()

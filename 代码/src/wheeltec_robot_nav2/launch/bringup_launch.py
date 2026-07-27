@@ -32,8 +32,6 @@ def generate_launch_description():
     # Get the launch directory
     bringup_dir = get_package_share_directory('nav2_bringup')
     launch_dir = os.path.join(bringup_dir, 'launch')
-    wheeltec_launch_dir = os.path.join(
-        get_package_share_directory('wheeltec_nav2'), 'launch')
 
     # Create the launch configuration variables
     namespace = LaunchConfiguration('namespace')
@@ -119,7 +117,7 @@ def generate_launch_description():
         description='Whether to respawn if a node crashes. Applied when composition is disabled.')
 
     declare_log_level_cmd = DeclareLaunchArgument(
-        'log_level', default_value='warn',
+        'log_level', default_value='info',
         description='log level')
 
     # Specify the actions
@@ -136,10 +134,7 @@ def generate_launch_description():
             parameters=[configured_params, {'autostart': autostart}],
             arguments=['--ros-args', '--log-level', log_level],
             remappings=remappings,
-            output='screen',
-            # 底盘、EKF、雷达已分别固定到7、2、3核；导航使用其余五核，
-            # 避免AMCL和控制器挤在两核上造成激光队列雪崩。
-            prefix='taskset -c 0,1,4,5,6 ',),
+            output='screen'),
 
         IncludeLaunchDescription(
             PythonLaunchDescriptionSource(os.path.join(launch_dir, 'slam_launch.py')),
@@ -164,8 +159,7 @@ def generate_launch_description():
                               'container_name': 'nav2_container'}.items()),
 
         IncludeLaunchDescription(
-            PythonLaunchDescriptionSource(os.path.join(
-                wheeltec_launch_dir, 'navigation_launch_competition.py')),
+            PythonLaunchDescriptionSource(os.path.join(launch_dir, 'navigation_launch.py')),
             launch_arguments={'namespace': namespace,
                               'use_sim_time': use_sim_time,
                               'autostart': autostart,

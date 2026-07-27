@@ -5,6 +5,19 @@ ROBOT_ROOT="/home/zyc/robot2"
 LOG_FILE="${ROBOT_ROOT}/competition_system.log"
 PID_FILE="/tmp/competition_system.pid"
 LAUNCH_PATTERN='ros2 launch home_patrol competition_system.launch.py'
+FOREGROUND=false
+
+case "${1:-}" in
+    "")
+        ;;
+    --foreground)
+        FOREGROUND=true
+        ;;
+    *)
+        echo "Usage: $0 [--foreground]" >&2
+        exit 2
+        ;;
+esac
 
 source "${ROBOT_ROOT}/scripts/robot_mode_lock.sh"
 robot_lock_prepare
@@ -29,18 +42,43 @@ if pgrep -f "${LAUNCH_PATTERN}" >/dev/null 2>&1; then
     exit 1
 fi
 
-"${ROBOT_ROOT}/scripts/nav_preflight.sh" navigation
+enable_mobile_base=false
+if [[ -c /dev/wheeltec_controller && -c /dev/wheeltec_lidar ]]; then
+    "${ROBOT_ROOT}/scripts/nav_preflight.sh" navigation
+    enable_mobile_base=true
+    echo "Hardware profile: full competition system (voice + environment + chassis + lidar)"
+else
+    echo "Hardware profile: voice/environment debug mode (chassis or lidar is not connected)"
+    [[ -c /dev/wheeltec_mic ]] \
+        || echo "WARNING: /dev/wheeltec_mic is unavailable; sound direction may not work." >&2
+    [[ -c /dev/air_sensor ]] \
+        || echo "WARNING: /dev/air_sensor is unavailable; environment data will wait for reconnection." >&2
+fi
+export JARVIS_ENABLE_BASE_ROTATION="${enable_mobile_base}"
 
 cd "${ROBOT_ROOT}"
 source /opt/ros/humble/setup.bash
 source install/setup.bash
 set -u
 
+launch_command=(
+    ros2 launch home_patrol competition_system.launch.py
+    "enable_mobile_base:=${enable_mobile_base}"
+    "auto_enable_interaction:=true"
+)
+
 # Keep the USB speaker loud enough for competition demonstrations.  Baidu TTS
 # already uses its maximum volume; this mixer level raises the actual speaker
 # output while leaving headroom to avoid the distortion of a 100% setting.
 if ! amixer -q sset PCM 80% unmute; then
     echo "WARNING: unable to set USB speaker volume; continuing with current level." >&2
+fi
+
+if [[ "${FOREGROUND}" == true ]]; then
+    robot_lock_release_transition
+    trap - EXIT
+    exec 8>&-
+    exec "${launch_command[@]}"
 fi
 
 # ros2 launch must be detached from the SSH output pipe.  The child inherits
@@ -54,7 +92,7 @@ fi
 # a surviving launch continues to own the lock.
 (
     exec 8>&-
-    exec nohup setsid ros2 launch home_patrol competition_system.launch.py
+    exec nohup setsid "${launch_command[@]}"
 ) </dev/null >"${LOG_FILE}" 2>&1 &
 launch_pid=$!
 echo "${launch_pid}" >"${PID_FILE}"

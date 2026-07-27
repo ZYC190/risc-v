@@ -1,8 +1,7 @@
-"""Run gmapping and the protected Nav2 command chain on the live map.
+"""Run gmapping and the official Nav2 command chain on the live map.
 
-This is the RPLIDAR C1-safe counterpart of the launch name used by the K1
-reference guide.  It deliberately reuses navigation_launch_competition.py so
-velocity smoothing and collision monitoring remain in the command path.
+The K1 reference launch structure is retained while the outer hardware launch
+continues to select this robot's RPLIDAR C1 driver.
 """
 
 import os
@@ -46,7 +45,8 @@ def generate_launch_description():
     car_mode = load_yaml(Path(default_hardware_config))["car_mode"]
 
     nav_share = get_package_share_directory("wheeltec_nav2")
-    nav_launch_dir = os.path.join(nav_share, "launch")
+    nav2_bringup_share = get_package_share_directory("nav2_bringup")
+    nav2_launch_dir = os.path.join(nav2_bringup_share, "launch")
     default_param_file = os.path.join(
         nav_share, "param", "wheeltec_params", f"param_{car_mode}.yaml"
     )
@@ -115,7 +115,7 @@ def generate_launch_description():
             IncludeLaunchDescription(
                 PythonLaunchDescriptionSource(
                     os.path.join(
-                        nav_launch_dir, "navigation_launch_competition.py"
+                        nav2_launch_dir, "navigation_launch.py"
                     )
                 ),
                 launch_arguments={

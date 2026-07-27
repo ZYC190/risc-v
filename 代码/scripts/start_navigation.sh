@@ -25,5 +25,5 @@ trap - EXIT
 exec ros2 launch wheeltec_nav2 wheeltec_nav2.launch.py \
     start_base:=true \
     start_lidar:=true \
-    start_waypoint_cycle:=false \
+    start_waypoint_cycle:=true \
     lidar_type:=rplidar_c1

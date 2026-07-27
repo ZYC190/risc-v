@@ -446,16 +446,16 @@ class AirSensorNode(Node):
             should_announce = self.last_demo_voice_state != "HCHO_ON"
             fake = self.demo_hcho_alert_data()
             self.demo_override_data = fake
-            self.demo_override_until = time.time() + 30
+            # Keep the formaldehyde demo active until the operator explicitly
+            # publishes CLEAR.  Real sensor frames must not end this demo.
+            self.demo_override_until = float("inf")
             self.last_phone_alert_level = None
             self.get_logger().warn(
-                "触发甲醛单项超标演示：甲醛 130ug/m3，其他环境指标正常，保持 30 秒"
+                "触发甲醛单项超标演示：甲醛 350ug/m3，持续保持，等待 CLEAR 恢复"
             )
             self.publish_air_data(fake)
             if should_announce:
-                self.announce(
-                    "家里面甲醛超标了，快远离，快远离，已打开风扇通风。"
-                )
+                self.announce("甲醛数据超标，请远离，已开启通风。")
             self.last_demo_voice_state = "HCHO_ON"
         elif cmd in ("OFF", "ALARM_OFF", "TEST_OFF", "CLEAR"):
             should_announce = self.last_demo_voice_state != "CLEAR"
@@ -467,9 +467,7 @@ class AirSensorNode(Node):
             self.normal_count = 5
             self.publish_air_data(normal)
             if should_announce:
-                self.announce(
-                    "家里面环境数据恢复正常，家里面安全了，风扇已关闭。"
-                )
+                self.announce("甲醛数据恢复正常，关闭通风。")
             self.last_demo_voice_state = "CLEAR"
 
     def read_serial_loop(self):

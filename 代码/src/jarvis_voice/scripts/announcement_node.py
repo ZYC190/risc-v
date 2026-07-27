@@ -140,7 +140,7 @@ class AnnouncementNode(Node):
     def _play(self, source_path):
         play_path = None
         try:
-            audio = (AudioSegment.from_file(source_path) + 15).set_frame_rate(48000)
+            audio = (AudioSegment.from_file(source_path) + 8).set_frame_rate(48000)
             with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as output:
                 play_path = output.name
             audio.export(play_path, format="wav")

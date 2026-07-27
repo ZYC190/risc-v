@@ -117,32 +117,22 @@ if mode != "mapping":
     with open(nav_params_path, encoding="utf-8") as stream:
         nav = yaml.safe_load(stream)
     require(isinstance(nav, dict), f"invalid navigation YAML: {nav_params_path}")
-    velocity = nav.get("velocity_smoother", {}).get("ros__parameters", {})
-    require(velocity.get("min_velocity") == [0.0, 0.0, -1.0],
-            f"navigation min_velocity={velocity.get('min_velocity')!r}")
     behaviors = nav.get("behavior_server", {}).get("ros__parameters", {})
-    require(behaviors.get("behavior_plugins") == ["wait"],
+    require(behaviors.get("behavior_plugins") == ["spin", "backup", "drive_on_heading", "wait"],
             f"behavior_plugins={behaviors.get('behavior_plugins')!r}")
     follow_path = nav.get("controller_server", {}).get("ros__parameters", {}).get("FollowPath", {})
-    require(float(follow_path.get("vx_min", -1.0)) >= 0.0,
-            f"controller vx_min={follow_path.get('vx_min')!r}")
-    require(follow_path.get("allow_reversing") is False,
-            f"allow_reversing={follow_path.get('allow_reversing')!r}")
-    print("navigation safety: reverse disabled in controller, smoother and recoveries")
+    controller_plugin = follow_path.get("plugin")
+    require(controller_plugin == "nav2_rotation_shim_controller::RotationShimController",
+            f"controller plugin={controller_plugin!r}")
+    require(follow_path.get("primary_controller") == "dwb_core::DWBLocalPlanner",
+            f"DWB primary_controller={follow_path.get('primary_controller')!r}")
+    require(float(follow_path.get("min_vel_x", 0.0)) < 0.0,
+            f"official DWB reverse velocity missing: min_vel_x={follow_path.get('min_vel_x')!r}")
+    require(int(follow_path.get("vy_samples", -1)) == 0,
+            f"official DWB vy_samples={follow_path.get('vy_samples')!r}")
+    print("official navigation profile: RotationShim + DWB; reverse/recovery enabled; vy_samples=0")
 else:
-    with open(mapping_safety_path, encoding="utf-8") as stream:
-        mapping_safety = yaml.safe_load(stream)
-    require(isinstance(mapping_safety, dict),
-            f"invalid mapping safety YAML: {mapping_safety_path}")
-    mapping_velocity = mapping_safety.get("velocity_smoother", {}).get("ros__parameters", {})
-    require(mapping_velocity.get("max_velocity") == [0.15, 0.0, 0.35],
-            f"mapping max_velocity={mapping_velocity.get('max_velocity')!r}")
-    require(mapping_velocity.get("min_velocity") == [0.0, 0.0, -0.35],
-            f"mapping min_velocity={mapping_velocity.get('min_velocity')!r}")
-    mapping_collision = mapping_safety.get("collision_monitor", {}).get("ros__parameters", {})
-    require(mapping_collision.get("scan", {}).get("topic") == "/scan",
-            f"mapping collision scan={mapping_collision.get('scan', {}).get('topic')!r}")
-    print("mapping safety: reverse/lateral disabled; forward 0.15 m/s, yaw 0.35 rad/s")
+    print("official mapping profile: no custom velocity smoother or collision monitor")
 PY
 
 packages=(turn_on_wheeltec_robot rplidar_ros wheeltec_nav2 nav2_map_server)
@@ -152,11 +142,11 @@ if [[ "${MODE}" == "mapping" ]]; then
         cartographer) packages+=(wheeltec_cartographer) ;;
         *) fail "mapper must be gmapping or cartographer" ;;
     esac
-    packages+=(nav2_velocity_smoother nav2_collision_monitor nav2_lifecycle_manager wheeltec_robot_keyboard)
+    packages+=(wheeltec_robot_keyboard)
 else
     packages+=(slam_gmapping wheeltec_cartographer)
     if [[ "${MODE}" == "navigation" ]]; then
-        packages+=(nav2_velocity_smoother nav2_collision_monitor nav2_lifecycle_manager)
+        packages+=(nav2_velocity_smoother nav2_lifecycle_manager)
     fi
 fi
 for package in "${packages[@]}"; do

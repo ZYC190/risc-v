@@ -24,7 +24,6 @@ setup(
             "patrol_node = home_patrol.patrol_node:main",
             "save_waypoint = home_patrol.waypoint_recorder:main",
             "map_http_server = home_patrol.map_http_server:main",
-            "patrol_camera_server = home_patrol.patrol_camera_server:main",
             "navigation_manager = home_patrol.navigation_manager:main",
         ],
     },

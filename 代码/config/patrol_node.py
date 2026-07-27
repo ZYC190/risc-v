@@ -566,7 +566,7 @@ class HomePatrolNode(Node):
         msg = String()
         msg.data = f"已到达{location}，环境数据正常，{location}安全。"
         self.voice_announce_pub.publish(msg)
-        self.get_logger().info(f"请求机器人综合安全巡查到达播报: {msg.data}")
+        self.get_logger().info(f"请求机器人环境巡查到达播报: {msg.data}")
 
     def _watch_navigation(self):
         if (

@@ -70,8 +70,6 @@ patterns=(
     '/nav2_velocity_smoother/velocity_smoother'
     '/rplidar_ros/.*/rplidar_node'
     '/yolov8_ros2/.*/yolov8_node'
-    '/home_patrol/.*/patrol_camera_server'
-    'ffmpeg.*patrol_camera_latest.jpg'
     '/wheeltec_arm_control/.*/arm_control'
     '/wheeltec_ui_dashboard/.*/ui_dashboard'
     '/jobot_mic/.*/myagv_mic_node'

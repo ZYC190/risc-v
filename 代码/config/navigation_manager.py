@@ -32,7 +32,6 @@ class NavigationManager(Node):
         self.declare_parameter("localization_timeout", 20.0)
         self.declare_parameter("action_unready_timeout", 8.0)
         self.declare_parameter("competition_mode", False)
-        self.declare_parameter("auto_enable_interaction", False)
 
         self.startup_timeout = float(self.get_parameter("startup_timeout").value)
         self.localization_timeout = float(
@@ -42,9 +41,6 @@ class NavigationManager(Node):
             2.0, float(self.get_parameter("action_unready_timeout").value)
         )
         self.competition_mode = bool(self.get_parameter("competition_mode").value)
-        self.auto_enable_interaction = bool(
-            self.get_parameter("auto_enable_interaction").value
-        )
         self.status_pub = self.create_publisher(
             String, str(self.get_parameter("status_topic").value), 10
         )
@@ -86,7 +82,6 @@ class NavigationManager(Node):
             "air": None,
             "arm": None,
             "vision": None,
-            "camera": None,
         }
         self.process_labels = {
             "nav": "Nav2",
@@ -98,7 +93,6 @@ class NavigationManager(Node):
             "air": "安全预警",
             "arm": "机械臂",
             "vision": "双目视觉",
-            "camera": "巡查看护摄像头与分段录像",
         }
         self.current_mode = "interaction"
         self.state = "booting"
@@ -118,7 +112,6 @@ class NavigationManager(Node):
         self.live_interaction_enabled = False
         self.voice_enable_repeats = 0
         self.vision_start_at = 0.0
-        self.next_camera_restart_at = 0.0
         self.initial_services_started = False
         self.monitor_timer = self.create_timer(0.25, self._monitor)
         self.status_timer = self.create_timer(2.0, self._publish_heartbeat)
@@ -134,8 +127,6 @@ class NavigationManager(Node):
         self.initial_service_timer.cancel()
         if self.competition_mode:
             self._set_mode("interaction", force=True)
-            if self.auto_enable_interaction:
-                self._enable_live_interaction()
 
     def _command_callback(self, msg):
         command = msg.data.strip().upper()
@@ -150,10 +141,6 @@ class NavigationManager(Node):
             self._set_mode(payload.get("mode", ""))
         elif command == "SET_INITIAL_POSE":
             self._set_initial_pose(payload)
-        elif command in {"CAMERA_START", "START_CAMERA"}:
-            self._start_patrol_camera()
-        elif command in {"CAMERA_STOP", "STOP_CAMERA"}:
-            self._stop_patrol_camera()
         elif command in {"MODE_INTERACTION", "INTERACTION"}:
             self._set_mode("interaction")
         elif command in {"MODE_WATER", "WATER", "DELIVER_WATER"}:
@@ -176,30 +163,6 @@ class NavigationManager(Node):
             self._publish_status(self.state, self.message)
         else:
             self._publish_status("error", f"不支持的导航系统指令：{command}")
-
-    def _start_patrol_camera(self):
-        if self.current_mode == "water":
-            self._publish_status(
-                "camera_unavailable", "功能二正在使用摄像头，请先退出送水模式"
-            )
-            return
-        if self._start_process(
-            "camera", [self.ros2, "run", "home_patrol", "patrol_camera_server"]
-        ):
-            self.get_logger().info("手机手动开启巡查看护摄像头与录像")
-
-    def _stop_patrol_camera(self):
-        if self.current_mode == "patrol":
-            self.get_logger().info(
-                "离家/室内巡查模式保持摄像头常开，已忽略关闭请求"
-            )
-            self._publish_status(
-                self.state,
-                "巡查摄像头保持开启；未连接相机时仅等待设备，不影响导航",
-            )
-            return
-        self._stop_process("camera")
-        self.get_logger().info("手机手动关闭巡查看护摄像头与录像")
 
     def _set_initial_pose(self, payload):
         pose = payload.get("pose", payload.get("waypoint", payload))
@@ -308,19 +271,7 @@ class NavigationManager(Node):
             self.initial_service_timer.cancel()
         if mode == self.current_mode and not force:
             if mode == "patrol":
-                self._start_process(
-                    "camera",
-                    [self.ros2, "run", "home_patrol", "patrol_camera_server"],
-                )
-                # Opening the indoor-patrol page publishes SET_MODE again.  If
-                # Nav2 is already alive, treating that idempotent command as a
-                # fresh START relocalizes AMCL and can replace the initial pose
-                # the parent just selected on the family map.  Only recover a
-                # genuinely missing navigation process here.
-                if not self._process_running("nav"):
-                    self._start_navigation()
-                else:
-                    self._publish_status(self.state, self.message)
+                self._start_navigation()
             else:
                 self._publish_status("ready", self.message)
             return
@@ -334,7 +285,6 @@ class NavigationManager(Node):
         if mode != "patrol":
             self._publish_string(self.patrol_control_pub, "STOP")
             self._stop_process("nav")
-            self._stop_process("camera")
             self.initial_pose_repeats = 0
             self.localization_good_samples = 0
             self.action_unready_since = 0.0
@@ -422,14 +372,8 @@ class NavigationManager(Node):
                 "announce",
                 [self.ros2, "run", "jarvis_voice", "announcement_node"],
             )
-            camera_started = self._start_process(
-                "camera",
-                [self.ros2, "run", "home_patrol", "patrol_camera_server"],
-            )
-            if not camera_started:
-                self.get_logger().warning("巡查看护摄像头首次启动失败，将由手机重试")
             self._publish_status(
-                "switching", "正在进入模式三：启动看护录像、环境监测、雷达定位与巡查导航"
+                "switching", "正在进入模式三：启动环境监测、雷达定位与巡查导航"
             )
             self._start_navigation()
 
@@ -487,17 +431,6 @@ class NavigationManager(Node):
                 self._publish_status("error", "导航启动超时，请检查 Nav2 终端日志")
 
         now = time.monotonic()
-        if (
-            self.current_mode == "patrol"
-            and not self._process_running("camera")
-            and now >= self.next_camera_restart_at
-        ):
-            self.next_camera_restart_at = now + 5.0
-            self._start_process(
-                "camera",
-                [self.ros2, "run", "home_patrol", "patrol_camera_server"],
-            )
-
         if (
             self.state == "localizing"
             and self.initial_pose_repeats > 0
@@ -671,7 +604,7 @@ class NavigationManager(Node):
                 "navigation_unavailable",
             }:
                 self._publish_status("error", f"导航进程已退出，代码 {exit_code}")
-            elif key in {"arm", "vision", "camera", "sound", "ui", "voice", "announce", "care", "air"} and exit_code != 0:
+            elif key in {"arm", "vision", "sound", "ui", "voice", "announce", "care", "air"} and exit_code != 0:
                 self.get_logger().warning(
                     f"{self.process_labels[key]}进程已退出，代码 {exit_code}"
                 )
@@ -856,7 +789,7 @@ class NavigationManager(Node):
         # Nav2 最重且会产生容器子进程，必须最先关闭，确保在 ros2 launch
         # 的关闭宽限期内收干净，避免下次启动误用孤儿 action server。
         for key in (
-            "nav", "vision", "camera", "arm", "air", "voice", "announce", "care", "ui", "sound"
+            "nav", "vision", "arm", "air", "voice", "announce", "care", "ui", "sound"
         ):
             self._stop_process(key)
         self.navigation_mode = False
