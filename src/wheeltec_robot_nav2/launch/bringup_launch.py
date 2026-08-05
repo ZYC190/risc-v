@@ -134,8 +134,7 @@ def generate_launch_description():
             parameters=[configured_params, {'autostart': autostart}],
             arguments=['--ros-args', '--log-level', log_level],
             remappings=remappings,
-            output='screen',
-            prefix='taskset -c 4,5 ',),
+            output='screen'),
 
         IncludeLaunchDescription(
             PythonLaunchDescriptionSource(os.path.join(launch_dir, 'slam_launch.py')),

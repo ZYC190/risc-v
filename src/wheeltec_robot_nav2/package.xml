@@ -9,7 +9,20 @@
 
   <buildtool_depend>ament_cmake</buildtool_depend>
   
+  <exec_depend>ament_index_python</exec_depend>
+  <exec_depend>launch</exec_depend>
+  <exec_depend>launch_ros</exec_depend>
   <depend>nav2_bringup</depend>
+  <exec_depend>nav2_common</exec_depend>
+  <exec_depend>nav2_collision_monitor</exec_depend>
+  <exec_depend>nav2_lifecycle_manager</exec_depend>
+  <exec_depend>nav2_map_server</exec_depend>
+  <exec_depend>nav2_velocity_smoother</exec_depend>
+  <exec_depend>nav2_waypoint_cycle</exec_depend>
+  <exec_depend>python3-yaml</exec_depend>
+  <exec_depend>slam_gmapping</exec_depend>
+  <exec_depend>turn_on_wheeltec_robot</exec_depend>
+  <exec_depend>wheeltec_cartographer</exec_depend>
   
   <test_depend>ament_lint_auto</test_depend>
   <test_depend>ament_lint_common</test_depend>
